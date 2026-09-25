@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// Craft rules based on the specific structures for Royal Studio
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      // In Firestore we check a collection, but Storage rules can't query Firestore directly 
+      // without extra config or using custom claims.
+      // We assume admins have the custom claim `role: 'admin'` set in their token.
+      return isAuthenticated() && request.auth.token.role == 'admin';
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Portfolio directory
+    match /portfolio/{allPaths=**} {
+      // Anyone can read portfolio media
+      allow read: if true;
+      // Only admins can upload, modify, or delete (capped at 30MB per asset)
+      allow write: if isAdmin() && (request.resource == null || request.resource.size < 30 * 1024 * 1024);
+    }
+
+    // Private customer galleries directory
+    // Structure: private-galleries/{customerId}/{allPaths=**}
+    match /private-galleries/{customerId}/{allPaths=**} {
+      // Customers can read only their own media, Admins can read all
+      allow read: if isOwner(customerId) || isAdmin();
+      // Only admins can upload, modify, or delete customer gallery media (capped at 50MB per asset)
+      allow write: if isAdmin() && (request.resource == null || request.resource.size < 50 * 1024 * 1024);
+    }
+
+    // Explicitly deny any other path
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

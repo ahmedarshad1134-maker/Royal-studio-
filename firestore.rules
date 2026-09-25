@@ -1,0 +1,135 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      // Admins are defined by a role claim in the token, or by a lookup in the users collection
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      // Users can read their own profile; Admins can read all profiles
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // On creation, non-admins can only create their own profile with role == 'customer'
+      allow create: if (isOwner(userId) && request.resource.data.role == 'customer') || isAdmin();
+      
+      // On update, users cannot escalate their role; only admins can change roles
+      allow update: if (
+        isOwner(userId) && 
+        request.resource.data.role == resource.data.role &&
+        (!('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid)
+      ) || isAdmin();
+      
+      // Only admins can delete user profiles
+      allow delete: if isAdmin();
+    }
+
+    // Bookings collection
+    match /bookings/{bookingId} {
+      // Customers can read their own bookings (by email or customerId)
+      allow read: if (isAuthenticated() && (
+        resource.data.email == request.auth.token.email || 
+        resource.data.customerId == request.auth.uid ||
+        isAdmin()
+      ));
+      // Customers or guests can submit enquiries (initial status must be NEW, internal adminNotes cannot be set)
+      allow create: if request.resource.data.status == 'NEW' && 
+                       (!('adminNotes' in request.resource.data) || request.resource.data.adminNotes == null || request.resource.data.adminNotes == '');
+      // Only authorized admins can update status, internal notes, or delete bookings
+      allow update, delete: if isAdmin();
+    }
+
+    // Services collection
+    match /services/{serviceId} {
+      // Anyone can read services
+      allow read: if true;
+      // Only admins can modify
+      allow write: if isAdmin();
+    }
+
+    // Packages collection
+    match /packages/{packageId} {
+      // Anyone can read packages
+      allow read: if true;
+      // Only admins can modify
+      allow write: if isAdmin();
+    }
+
+    // Portfolio collection
+    match /portfolio/{itemId} {
+      // Anyone can read portfolio items
+      allow read: if true;
+      // Only admins can modify
+      allow write: if isAdmin();
+    }
+
+    // Reviews collection
+    match /reviews/{reviewId} {
+      // Anyone can read approved reviews
+      allow read: if resource.data.approved == true || isAdmin();
+      // Authenticated customers can create reviews, but approved must be false
+      allow create: if isAuthenticated() && request.resource.data.approved == false;
+      // Only admins can approve, update or delete reviews
+      allow update, delete: if isAdmin();
+    }
+
+    // Notifications collection
+    match /notifications/{notificationId} {
+      // Users can read their own notifications
+      allow read: if isAuthenticated() && (
+        resource.data.recipientUserId == request.auth.token.email || 
+        resource.data.recipientUserId == request.auth.uid ||
+        isAdmin()
+      );
+      // Users can only mark their own notifications as read
+      allow update: if isAuthenticated() && (
+        resource.data.recipientUserId == request.auth.token.email || 
+        resource.data.recipientUserId == request.auth.uid
+      ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'isRead']);
+      // System/Admins create or delete notifications
+      allow create, delete: if isAdmin();
+    }
+
+    // Studio settings collection
+    match /studioSettings/{settingId} {
+      // Anyone can read public settings (like contact info)
+      allow read: if true;
+      // Only admins can modify
+      allow write: if isAdmin();
+    }
+
+    // Blocked Dates
+    match /blockedDates/{dateId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Invoices and Receipts collection
+    match /invoices/{invoiceId} {
+      // Customers can read only their own invoices (matched by email or customerId)
+      // Admins can read any invoice
+      allow read: if isAuthenticated() && (
+        resource.data.customerEmail == request.auth.token.email || 
+        resource.data.customerId == request.auth.uid ||
+        isAdmin()
+      );
+      // Only authorized admins can create, update, or delete invoices and payment records
+      allow write: if isAdmin();
+    }
+  }
+}

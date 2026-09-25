@@ -1,0 +1,6 @@
+{
+  "name": "Royal Studio",
+  "description": "Professional photography and cinematography business app",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
