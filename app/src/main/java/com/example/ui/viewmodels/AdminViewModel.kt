@@ -2,10 +2,10 @@ package com.example.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.models.UserRole
 import com.example.ui.models.BookingItem
 import com.example.ui.models.ReviewItem
 import com.example.data.repository.RepositoryProvider
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,14 +19,14 @@ data class AdminUiState(
     val authError: String? = null,
     
     // Stats
-    val newEnquiriesCount: Int = 3,
-    val upcomingEventsCount: Int = 5,
-    val confirmedBookingsCount: Int = 12,
-    val completedEventsCount: Int = 45,
-    val portfolioCount: Int = 128,
-    val servicesCount: Int = 8,
-    val packagesCount: Int = 4,
-    val pendingReviewsCount: Int = 2,
+    val newEnquiriesCount: Int = 0,
+    val upcomingEventsCount: Int = 0,
+    val confirmedBookingsCount: Int = 0,
+    val completedEventsCount: Int = 0,
+    val portfolioCount: Int = 0,
+    val servicesCount: Int = 0,
+    val packagesCount: Int = 0,
+    val pendingReviewsCount: Int = 0,
     
     val currentSection: AdminSection = AdminSection.DASHBOARD
 )
@@ -57,7 +57,7 @@ class AdminViewModel : ViewModel() {
             authRepo.getAuthStateUpdates().collect { user ->
                 if (user != null) {
                     val role = authRepo.getUserRole(user.uid)
-                    if (role == "admin") {
+                    if (role == UserRole.ADMIN) {
                         _uiState.update { 
                             it.copy(
                                 isAuthenticated = true,
@@ -67,14 +67,21 @@ class AdminViewModel : ViewModel() {
                         }
                         loadDashboardStats()
                     } else {
-                        // User is signed in but not an admin. 
-                        // Note: If they switch screens, they'd get signed out. For safety:
-                        // Don't auto-sign out unless we explicitly need to. 
-                        // We'll leave them signed in as customer, but they just can't see the admin panel.
-                        _uiState.update { it.copy(isAuthenticated = false) }
+                        // User is signed in but not an authorized admin
+                        _uiState.update { 
+                            it.copy(
+                                isAuthenticated = false,
+                                isAuthenticating = false
+                            ) 
+                        }
                     }
                 } else {
-                    _uiState.update { it.copy(isAuthenticated = false) }
+                    _uiState.update { 
+                        it.copy(
+                            isAuthenticated = false,
+                            isAuthenticating = false
+                        ) 
+                    }
                 }
             }
         }
@@ -94,46 +101,41 @@ class AdminViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(isAuthenticating = true, authError = null) }
             
-            if (authRepo.isInitialized) {
-                val result = authRepo.signIn(trimmedEmail, password)
-                if (result.isSuccess) {
-                    val user = result.getOrNull()
-                    val role = authRepo.getUserRole(user?.uid ?: "")
-                    if (role == "admin") {
-                        _uiState.update { 
-                            it.copy(isAuthenticated = true, isAuthenticating = false, authError = null)
-                        }
-                        loadDashboardStats()
-                    } else {
-                        authRepo.signOut()
-                        _uiState.update { 
-                            it.copy(isAuthenticating = false, authError = "Access Denied: Not an Administrator.")
-                        }
-                    }
-                } else {
-                    _uiState.update { 
-                        it.copy(isAuthenticating = false, authError = result.exceptionOrNull()?.message ?: "Login Failed")
-                    }
+            if (!authRepo.isInitialized) {
+                _uiState.update { 
+                    it.copy(
+                        isAuthenticating = false, 
+                        authError = "Firebase service is not initialized. Please ensure google-services.json is configured in the app/ directory."
+                    ) 
                 }
-            } else {
-                // Mock behavior
-                delay(1000)
-                if (password == "admin123") {
+                return@launch
+            }
+
+            val result = authRepo.signIn(trimmedEmail, password)
+            if (result.isSuccess) {
+                val user = result.getOrNull()
+                val role = authRepo.getUserRole(user?.uid ?: "", forceRefresh = true)
+                if (role == UserRole.ADMIN) {
                     _uiState.update { 
-                        it.copy(
-                            isAuthenticated = true,
-                            isAuthenticating = false,
-                            authError = null
-                        )
+                        it.copy(isAuthenticated = true, isAuthenticating = false, authError = null)
                     }
                     loadDashboardStats()
                 } else {
+                    // Sign out immediately - unauthorized account
+                    authRepo.signOut()
                     _uiState.update { 
                         it.copy(
-                            isAuthenticating = false,
-                            authError = "Invalid credentials. Unauthorized access prohibited."
+                            isAuthenticating = false, 
+                            authError = "Access Denied: This account is not an authorized Administrator."
                         )
                     }
+                }
+            } else {
+                _uiState.update { 
+                    it.copy(
+                        isAuthenticating = false, 
+                        authError = result.exceptionOrNull()?.message ?: "Login failed. Invalid credentials."
+                    )
                 }
             }
         }

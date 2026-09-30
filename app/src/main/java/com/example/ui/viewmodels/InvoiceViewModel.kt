@@ -190,19 +190,37 @@ class InvoiceViewModel : ViewModel() {
 
         viewModelScope.launch {
             _uiState.update { it.copy(isActionInProgress = true, errorMessage = null) }
-            val id = repository.createOrUpdateInvoice(invoice)
-            val created = invoice.copy(id = id)
-
-            _uiState.update { current ->
-                val updatedList = (listOf(created) + current.invoices.filter { it.id != id })
-                current.copy(
-                    isActionInProgress = false,
-                    invoices = updatedList,
-                    selectedInvoice = created,
-                    successMessage = "Invoice ${created.invoiceNumber} created successfully"
-                )
+            if (!repository.isInitialized) {
+                _uiState.update {
+                    it.copy(
+                        isActionInProgress = false,
+                        errorMessage = "Firebase is not initialized. Please configure google-services.json to create invoices."
+                    )
+                }
+                return@launch
             }
-            applyFilters()
+            try {
+                val id = repository.createOrUpdateInvoice(invoice)
+                val created = invoice.copy(id = id)
+
+                _uiState.update { current ->
+                    val updatedList = (listOf(created) + current.invoices.filter { it.id != id })
+                    current.copy(
+                        isActionInProgress = false,
+                        invoices = updatedList,
+                        selectedInvoice = created,
+                        successMessage = "Invoice ${created.invoiceNumber} created successfully"
+                    )
+                }
+                applyFilters()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isActionInProgress = false,
+                        errorMessage = "Failed to create invoice: ${e.localizedMessage}"
+                    )
+                }
+            }
         }
     }
 
@@ -219,6 +237,13 @@ class InvoiceViewModel : ViewModel() {
         val validAmount = amount.coerceAtLeast(0.0)
         if (validAmount <= 0) {
             _uiState.update { it.copy(errorMessage = "Payment amount must be greater than zero") }
+            return
+        }
+
+        if (!repository.isInitialized) {
+            _uiState.update {
+                it.copy(errorMessage = "Firebase is not initialized. Please configure google-services.json to record payments.")
+            }
             return
         }
 
@@ -283,23 +308,36 @@ class InvoiceViewModel : ViewModel() {
      * Update invoice payment status manually if needed (e.g. Refunded)
      */
     fun updatePaymentStatus(invoiceId: String, newStatus: String) {
+        if (!repository.isInitialized) {
+            _uiState.update {
+                it.copy(errorMessage = "Firebase is not initialized. Please configure google-services.json to update status.")
+            }
+            return
+        }
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isActionInProgress = true) }
+            _uiState.update { it.copy(isActionInProgress = true, errorMessage = null) }
             val target = _uiState.value.invoices.firstOrNull { it.id == invoiceId }
             if (target != null) {
-                val updated = target.copy(paymentStatus = newStatus)
-                repository.createOrUpdateInvoice(updated)
+                try {
+                    val updated = target.copy(paymentStatus = newStatus)
+                    repository.createOrUpdateInvoice(updated)
 
-                _uiState.update { current ->
-                    val updatedList = current.invoices.map { if (it.id == invoiceId) updated else it }
-                    current.copy(
-                        isActionInProgress = false,
-                        invoices = updatedList,
-                        selectedInvoice = if (current.selectedInvoice?.id == invoiceId) updated else current.selectedInvoice,
-                        successMessage = "Status updated to $newStatus"
-                    )
+                    _uiState.update { current ->
+                        val updatedList = current.invoices.map { if (it.id == invoiceId) updated else it }
+                        current.copy(
+                            isActionInProgress = false,
+                            invoices = updatedList,
+                            selectedInvoice = if (current.selectedInvoice?.id == invoiceId) updated else current.selectedInvoice,
+                            successMessage = "Status updated to $newStatus"
+                        )
+                    }
+                    applyFilters()
+                } catch (e: Exception) {
+                    _uiState.update {
+                        it.copy(isActionInProgress = false, errorMessage = "Failed to update status: ${e.localizedMessage}")
+                    }
                 }
-                applyFilters()
             }
         }
     }

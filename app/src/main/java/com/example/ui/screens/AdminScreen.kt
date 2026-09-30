@@ -217,9 +217,9 @@ private fun AdminLoginScreen(
             
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "If backend not initialized, use 'admin123' for demonstration",
+                text = "Credentials are authenticated securely against Firebase Authentication.",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                 textAlign = TextAlign.Center
             )
         }
@@ -319,10 +319,10 @@ private fun AdminDashboardLayout(
                 AdminSection.BOOKINGS -> AdminBookingsSection()
                 AdminSection.INVOICES -> AdminInvoicesSection(onBackToDashboard = { onNavigate(AdminSection.DASHBOARD) })
                 AdminSection.PORTFOLIO -> AdminPortfolioSection()
-                AdminSection.SERVICES -> PlaceholderAdminView(uiState.currentSection.title, "Configure offered photography/videography services.")
-                AdminSection.PACKAGES -> PlaceholderAdminView(uiState.currentSection.title, "Manage pricing and feature bundles.")
-                AdminSection.REVIEWS -> PlaceholderAdminView(uiState.currentSection.title, "Moderate client testimonials.")
-                AdminSection.SETTINGS -> PlaceholderAdminView(uiState.currentSection.title, "Update studio contact and public information.")
+                AdminSection.SERVICES -> AdminServicesSection()
+                AdminSection.PACKAGES -> AdminPackagesSection()
+                AdminSection.REVIEWS -> AdminReviewsSection()
+                AdminSection.SETTINGS -> AdminSettingsSection()
             }
         }
     }

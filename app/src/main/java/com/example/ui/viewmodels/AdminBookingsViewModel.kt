@@ -158,6 +158,16 @@ class AdminBookingsViewModel : ViewModel() {
             }
         }
 
+        if (!repository.isInitialized) {
+            _uiState.update {
+                it.copy(
+                    isUpdating = false,
+                    errorMessage = "Firebase is not initialized. Please configure google-services.json to update booking status."
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isUpdating = true, errorMessage = null, statusMessage = null) }
             val success = repository.updateBookingStatus(
@@ -173,20 +183,6 @@ class AdminBookingsViewModel : ViewModel() {
                         isUpdating = false,
                         statusMessage = "Status updated to $newStatus successfully"
                     )
-                }
-                // Refresh local list if using mock/offline
-                if (!repository.isInitialized) {
-                    val updatedList = _uiState.value.bookings.map { b ->
-                        if (b.id == bookingId) {
-                            b.copy(
-                                status = newStatus,
-                                adminNotes = if (note.isNotBlank()) note else b.adminNotes,
-                                updatedAt = Date()
-                            )
-                        } else b
-                    }
-                    _uiState.update { it.copy(bookings = updatedList) }
-                    applyFilters()
                 }
             } else {
                 _uiState.update {
@@ -204,6 +200,17 @@ class AdminBookingsViewModel : ViewModel() {
      */
     fun saveInternalNotes(bookingId: String, notes: String) {
         val currentAdmin = authRepo.currentUser?.email ?: "Admin"
+
+        if (!repository.isInitialized) {
+            _uiState.update {
+                it.copy(
+                    isUpdating = false,
+                    errorMessage = "Firebase is not initialized. Please configure google-services.json to save notes."
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isUpdating = true, errorMessage = null) }
             val success = repository.updateBookingStatus(
@@ -217,13 +224,6 @@ class AdminBookingsViewModel : ViewModel() {
                     isUpdating = false,
                     statusMessage = if (success) "Internal notes saved." else "Failed to save internal notes."
                 )
-            }
-            if (!repository.isInitialized && success) {
-                val updatedList = _uiState.value.bookings.map { b ->
-                    if (b.id == bookingId) b.copy(adminNotes = notes, updatedAt = Date()) else b
-                }
-                _uiState.update { it.copy(bookings = updatedList) }
-                applyFilters()
             }
         }
     }
@@ -239,6 +239,17 @@ class AdminBookingsViewModel : ViewModel() {
         packageId: String
     ) {
         val currentAdmin = authRepo.currentUser?.email ?: "Admin"
+
+        if (!repository.isInitialized) {
+            _uiState.update {
+                it.copy(
+                    isUpdating = false,
+                    errorMessage = "Firebase is not initialized. Please configure google-services.json to update event details."
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isUpdating = true, errorMessage = null) }
             val success = repository.updateBookingEventDetails(
@@ -254,21 +265,6 @@ class AdminBookingsViewModel : ViewModel() {
                     isUpdating = false,
                     statusMessage = if (success) "Event details updated." else "Failed to update event details."
                 )
-            }
-            if (!repository.isInitialized && success) {
-                val updatedList = _uiState.value.bookings.map { b ->
-                    if (b.id == bookingId) {
-                        b.copy(
-                            eventType = eventType,
-                            eventDate = eventDate,
-                            eventLocation = location,
-                            packageId = packageId,
-                            updatedAt = Date()
-                        )
-                    } else b
-                }
-                _uiState.update { it.copy(bookings = updatedList) }
-                applyFilters()
             }
         }
     }

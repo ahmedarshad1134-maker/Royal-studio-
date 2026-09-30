@@ -220,3 +220,15 @@ data class InvoiceDto(
     @get:Exclude
     val payments: List<PaymentRecordDto> get() = paymentRecords
 }
+
+data class ContactMessageDto(
+    @DocumentId val id: String = "",
+    val name: String = "",
+    val phone: String = "",
+    val email: String = "",
+    val message: String = "",
+    @ServerTimestamp val createdAt: Date? = null
+) {
+    @get:Exclude
+    val messageId: String get() = id
+}

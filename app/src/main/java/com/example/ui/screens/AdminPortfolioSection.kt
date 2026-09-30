@@ -50,9 +50,13 @@ class AdminPortfolioViewModel : ViewModel() {
     private fun loadItems() {
         viewModelScope.launch {
             if (dbRepo.isInitialized) {
-                dbRepo.getPortfolioItems().collect { items ->
-                    _uiState.update { it.copy(items = items) }
-                }
+                dbRepo.getPortfolioItems()
+                    .catch {
+                        _uiState.update { it.copy(items = emptyList()) }
+                    }
+                    .collect { items ->
+                        _uiState.update { it.copy(items = items) }
+                    }
             }
         }
     }

@@ -10,10 +10,13 @@ service firebase.storage {
     }
 
     function isAdmin() {
-      // In Firestore we check a collection, but Storage rules can't query Firestore directly 
-      // without extra config or using custom claims.
-      // We assume admins have the custom claim `role: 'admin'` set in their token.
-      return isAuthenticated() && request.auth.token.role == 'admin';
+      // Single consistent admin role check:
+      // Firebase Storage rules evaluate auth token custom claims.
+      // Admin users must have the custom claim `role: 'admin'` or `admin: true` provisioned via Firebase Admin SDK.
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true
+      );
     }
 
     function isOwner(userId) {

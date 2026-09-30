@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -140,22 +141,9 @@ fun ContactScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                     
                     ContactMethodCard(
-                        icon = Icons.Default.Email,
-                        title = "Email",
-                        value1 = contact.email,
-                        onClick1 = {
-                            val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${contact.email}"))
-                            context.startActivity(intent)
-                        }
-                    )
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    ContactMethodCard(
                         icon = Icons.Default.LocationOn,
                         title = "Studio Location",
                         value1 = contact.address,
-                        value2 = contact.businessHours,
                         onClick1 = {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(contact.address)}"))
                             context.startActivity(intent)
@@ -208,6 +196,32 @@ fun ContactScreen(
                             }
                         }
                     } else {
+                        if (uiState.submissionError != null) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = "Error",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = uiState.submissionError!!,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+
                         OutlinedTextField(
                             value = uiState.name,
                             onValueChange = { viewModel.updateForm(it, uiState.phone, uiState.email, uiState.message) },

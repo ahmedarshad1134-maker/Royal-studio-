@@ -1,7 +1,21 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,10 +64,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -135,6 +155,7 @@ fun BookingScreen(
             if (uiState.submittedBooking != null) {
                 BookingConfirmationView(
                     booking = uiState.submittedBooking!!,
+                    studioWhatsApp = uiState.studioWhatsApp,
                     onTrackEnquiry = {
                         viewModel.resetBooking()
                         navController.navigate("customer_area")
@@ -615,24 +636,46 @@ private fun ReviewRow(label: String, value: String) {
 @Composable
 fun BookingConfirmationView(
     booking: BookingItem,
+    studioWhatsApp: String = "+916289172657",
     onTrackEnquiry: () -> Unit = {},
     onDone: () -> Unit
 ) {
+    val context = LocalContext.current
     val dateFormatter = SimpleDateFormat("MMMM d, yyyy", Locale.getDefault())
     val dateString = dateFormatter.format(Date(booking.eventDate))
 
+    val rawNumber = studioWhatsApp.ifBlank { "+916289172657" }
+    val digitsOnly = rawNumber.replace(Regex("[^0-9]"), "").ifBlank { "916289172657" }
+
+    val lines = mutableListOf<String>()
+    lines.add("New booking enquiry from Royal Studio app")
+    val refId = booking.referenceId.ifBlank { booking.id }
+    if (refId.isNotBlank()) lines.add("Booking Reference ID: $refId")
+    if (booking.customerName.isNotBlank()) lines.add("Client Name: ${booking.customerName}")
+    if (booking.phone.isNotBlank()) lines.add("Client Phone: ${booking.phone}")
+    if (booking.eventType.isNotBlank()) lines.add("Event Type: ${booking.eventType}")
+    if (booking.eventDate > 0L) {
+        val eventDateStr = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(booking.eventDate))
+        lines.add("Event Date: $eventDateStr")
+    }
+    if (booking.location.isNotBlank()) lines.add("Event Location: ${booking.location}")
+    val offering = listOfNotNull(booking.packageId, booking.serviceId).firstOrNull { it.isNotBlank() }
+    if (!offering.isNullOrBlank()) lines.add("Selected Package/Service: $offering")
+    if (!booking.message.isNullOrBlank()) lines.add("Special Notes: ${booking.message}")
+
+    val prefilledText = lines.joinToString("\n")
+    val encodedMessage = Uri.encode(prefilledText)
+    val whatsappUrl = "https://wa.me/$digitsOnly?text=$encodedMessage"
+
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(
-            imageVector = Icons.Default.CheckCircle,
-            contentDescription = "Success",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(80.dp)
-        )
-        Spacer(modifier = Modifier.height(24.dp))
+        BookingSuccessAnimation(modifier = Modifier.padding(bottom = 8.dp))
+        Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = "Enquiry Submitted!",
             style = MaterialTheme.typography.headlineLarge,
@@ -712,8 +755,34 @@ fun BookingConfirmationView(
             textAlign = TextAlign.Center
         )
         
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(24.dp))
         
+        Button(
+            onClick = {
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(whatsappUrl))
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        context,
+                        "Could not open WhatsApp. Please ensure WhatsApp or a web browser is installed.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF25D366),
+                contentColor = Color.White
+            )
+        ) {
+            Text(
+                text = "Send Details on WhatsApp",
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(vertical = 6.dp)
+            )
+        }
+
         Button(
             onClick = onTrackEnquiry,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -731,3 +800,197 @@ fun BookingConfirmationView(
         }
     }
 }
+
+@Composable
+fun BookingSuccessAnimation(
+    modifier: Modifier = Modifier
+) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.tertiary
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
+
+    val scaleAnim = remember { Animatable(0f) }
+    val checkmarkProgress = remember { Animatable(0f) }
+    val burstProgress = remember { Animatable(0f) }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseRing by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulseRing"
+    )
+
+    LaunchedEffect(Unit) {
+        // Pop in the main circle with a bouncy spring
+        scaleAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        // Trigger celebratory confetti burst
+        kotlinx.coroutines.delay(200)
+        burstProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(700, easing = FastOutSlowInEasing)
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        // Draw the checkmark
+        kotlinx.coroutines.delay(350)
+        checkmarkProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(500, easing = FastOutSlowInEasing)
+        )
+    }
+
+    Box(
+        modifier = modifier.size(150.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val mainRadius = size.minDimension * 0.28f
+
+            // 1. Continuous gentle ripple ring after initial burst
+            if (scaleAnim.value > 0.8f) {
+                val ringRadius = mainRadius + (pulseRing * 32.dp.toPx())
+                val ringAlpha = ((1f - pulseRing) * 0.45f).coerceIn(0f, 1f)
+                drawCircle(
+                    color = primaryColor.copy(alpha = ringAlpha),
+                    radius = ringRadius,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 2.5.dp.toPx())
+                )
+            }
+
+            // 2. Confetti particle burst around the badge
+            if (burstProgress.value > 0f && burstProgress.value < 1f) {
+                val particleCount = 12
+                val particleAlpha = (1f - burstProgress.value).coerceIn(0f, 1f)
+                val colors = listOf(
+                    Color(0xFFFFD700), // Gold
+                    primaryColor,      // Primary
+                    Color(0xFF25D366), // Emerald
+                    secondaryColor,    // Accent
+                    Color(0xFFFF6B6B), // Coral
+                    Color(0xFF4ECDC4)  // Teal
+                )
+
+                for (i in 0 until particleCount) {
+                    val angleDeg = (i * (360f / particleCount)) + 15f
+                    val angleRad = Math.toRadians(angleDeg.toDouble())
+                    val burstDistance = mainRadius * 1.15f + burstProgress.value * (mainRadius * 1.1f)
+                    val px = cx + (Math.cos(angleRad) * burstDistance).toFloat()
+                    val py = cy + (Math.sin(angleRad) * burstDistance).toFloat()
+                    val pColor = colors[i % colors.size].copy(alpha = particleAlpha)
+                    val pRadius = (3.5.dp.toPx() * (1f - burstProgress.value * 0.5f))
+
+                    drawCircle(
+                        color = pColor,
+                        radius = pRadius,
+                        center = Offset(px, py)
+                    )
+                }
+            }
+
+            // 3. Central badge background with gradient & shadow-like glow
+            val currentRadius = mainRadius * scaleAnim.value
+            if (currentRadius > 0f) {
+                // Outer soft halo
+                drawCircle(
+                    color = primaryColor.copy(alpha = 0.2f * scaleAnim.value),
+                    radius = currentRadius * 1.22f,
+                    center = Offset(cx, cy)
+                )
+
+                // Main badge circle with gradient
+                val gradientBrush = Brush.linearGradient(
+                    colors = listOf(
+                        primaryColor,
+                        primaryColor.copy(alpha = 0.85f)
+                    ),
+                    start = Offset(cx - currentRadius, cy - currentRadius),
+                    end = Offset(cx + currentRadius, cy + currentRadius)
+                )
+                drawCircle(
+                    brush = gradientBrush,
+                    radius = currentRadius,
+                    center = Offset(cx, cy)
+                )
+
+                // Subtle inner border ring for polish
+                drawCircle(
+                    color = onPrimaryColor.copy(alpha = 0.3f),
+                    radius = currentRadius,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
+            }
+
+            // 4. Animated Checkmark drawing
+            val progress = checkmarkProgress.value
+            if (progress > 0f && scaleAnim.value > 0.5f) {
+                val p1x = cx - mainRadius * 0.44f
+                val p1y = cy + mainRadius * 0.02f
+
+                val p2x = cx - mainRadius * 0.12f
+                val p2y = cy + mainRadius * 0.38f
+
+                val p3x = cx + mainRadius * 0.46f
+                val p3y = cy - mainRadius * 0.28f
+
+                val len1 = Math.hypot((p2x - p1x).toDouble(), (p2y - p1y).toDouble()).toFloat()
+                val len2 = Math.hypot((p3x - p2x).toDouble(), (p3y - p2y).toDouble()).toFloat()
+                val totalLen = len1 + len2
+                val ratio1 = len1 / totalLen
+
+                val strokeWidth = 5.dp.toPx()
+
+                if (progress <= ratio1) {
+                    val subProgress = progress / ratio1
+                    val curX = p1x + (p2x - p1x) * subProgress
+                    val curY = p1y + (p2y - p1y) * subProgress
+                    drawLine(
+                        color = onPrimaryColor,
+                        start = Offset(p1x, p1y),
+                        end = Offset(curX, curY),
+                        strokeWidth = strokeWidth,
+                        cap = StrokeCap.Round
+                    )
+                } else {
+                    // First segment is complete
+                    drawLine(
+                        color = onPrimaryColor,
+                        start = Offset(p1x, p1y),
+                        end = Offset(p2x, p2y),
+                        strokeWidth = strokeWidth,
+                        cap = StrokeCap.Round
+                    )
+                    // Second segment is animating
+                    val subProgress = ((progress - ratio1) / (1f - ratio1)).coerceIn(0f, 1f)
+                    val curX = p2x + (p3x - p2x) * subProgress
+                    val curY = p2y + (p3y - p2y) * subProgress
+                    drawLine(
+                        color = onPrimaryColor,
+                        start = Offset(p2x, p2y),
+                        end = Offset(curX, curY),
+                        strokeWidth = strokeWidth,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+        }
+    }
+}
+

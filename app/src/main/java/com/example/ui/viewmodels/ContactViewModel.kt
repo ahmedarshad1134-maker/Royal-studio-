@@ -1,7 +1,11 @@
 package com.example.ui.viewmodels
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.models.ContactMessageDto
+import com.example.data.repository.FirebaseRepository
+import com.example.data.repository.RepositoryProvider
 import com.example.ui.models.ContactInfo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Date
 
 data class ContactUiState(
     val isLoading: Boolean = true,
@@ -23,10 +28,15 @@ data class ContactUiState(
     val errors: Map<String, String> = emptyMap(),
     
     val isSubmitting: Boolean = false,
-    val submissionSuccess: Boolean = false
+    val submissionSuccess: Boolean = false,
+    val submissionError: String? = null
 )
 
-class ContactViewModel : ViewModel() {
+class ContactViewModel(
+    private val repository: FirebaseRepository = RepositoryProvider.firebaseRepository
+) : ViewModel() {
+    constructor() : this(RepositoryProvider.firebaseRepository)
+
     private val _uiState = MutableStateFlow(ContactUiState())
     val uiState: StateFlow<ContactUiState> = _uiState.asStateFlow()
 
@@ -38,24 +48,40 @@ class ContactViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             
-            // Simulate network delay for fetching from backend/Admin panel
-            delay(500)
+            var studioContact: ContactInfo? = null
+            if (repository.isInitialized) {
+                try {
+                    val settings = repository.getStudioSettings()
+                    if (settings != null) {
+                        studioContact = ContactInfo(
+                            phone = settings.phone.ifBlank { "+916289172657" },
+                            whatsapp = settings.whatsapp.ifBlank { "+916289172657" },
+                            address = settings.address.ifBlank { "F-55/A Battikal 2nd lean" },
+                            instagramUrl = settings.socialLinks["Instagram"] ?: "https://instagram.com/royalstudio",
+                            facebookUrl = settings.socialLinks["Facebook"] ?: "https://facebook.com/royalstudio",
+                            mapUrl = "https://maps.google.com"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w("ContactViewModel", "Could not load studio settings from Firestore", e)
+                }
+            }
 
-            val mockContact = ContactInfo(
-                phone = "[+00 000 000 0000]",
-                whatsapp = "[+00 000 000 0000]",
-                email = "[contact@yourstudio.com]",
-                address = "[Your Studio Address, City, Country]",
-                businessHours = "[Mon-Fri: 9:00 AM - 6:00 PM]",
-                instagramUrl = "[https://instagram.com/yourprofile]",
-                facebookUrl = "[https://facebook.com/yourprofile]",
-                mapUrl = "[Google Maps Link]"
-            )
+            if (studioContact == null) {
+                studioContact = ContactInfo(
+                    phone = "+916289172657",
+                    whatsapp = "+916289172657",
+                    address = "F-55/A Battikal 2nd lean",
+                    instagramUrl = "https://instagram.com/royalstudio",
+                    facebookUrl = "https://facebook.com/royalstudio",
+                    mapUrl = "https://maps.google.com"
+                )
+            }
 
             _uiState.update { 
                 it.copy(
                     isLoading = false,
-                    contactInfo = mockContact
+                    contactInfo = studioContact
                 )
             }
         }
@@ -68,7 +94,8 @@ class ContactViewModel : ViewModel() {
                 phone = phone,
                 email = email,
                 message = message,
-                errors = emptyMap() // Clear errors on typing
+                errors = emptyMap(), // Clear errors on typing
+                submissionError = null // Clear submission error on typing
             ) 
         }
     }
@@ -90,26 +117,44 @@ class ContactViewModel : ViewModel() {
         }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isSubmitting = true) }
+            _uiState.update { it.copy(isSubmitting = true, submissionError = null) }
             
-            // Simulate API call
-            delay(1500)
-            
-            _uiState.update { 
-                it.copy(
-                    isSubmitting = false,
-                    submissionSuccess = true,
-                    // Reset form
-                    name = "",
-                    phone = "",
-                    email = "",
-                    message = ""
+            try {
+                val messageDto = ContactMessageDto(
+                    name = currentState.name.trim(),
+                    phone = currentState.phone.trim(),
+                    email = currentState.email.trim(),
+                    message = currentState.message.trim(),
+                    createdAt = Date()
                 )
+                repository.createContactMessage(messageDto)
+                
+                _uiState.update { 
+                    it.copy(
+                        isSubmitting = false,
+                        submissionSuccess = true,
+                        submissionError = null,
+                        // Reset form
+                        name = "",
+                        phone = "",
+                        email = "",
+                        message = "",
+                        errors = emptyMap()
+                    )
+                }
+                
+                // Auto hide success message
+                delay(4000)
+                _uiState.update { it.copy(submissionSuccess = false) }
+            } catch (e: Exception) {
+                Log.e("ContactViewModel", "Error submitting contact form", e)
+                _uiState.update { 
+                    it.copy(
+                        isSubmitting = false,
+                        submissionError = e.localizedMessage ?: "Failed to submit message. Please try again."
+                    )
+                }
             }
-            
-            // Auto hide success message
-            delay(4000)
-            _uiState.update { it.copy(submissionSuccess = false) }
         }
     }
 }

@@ -22,18 +22,26 @@ sealed class UploadState {
 
 class StorageRepository {
     private var storage: com.google.firebase.storage.FirebaseStorage? = null
-    var isInitialized: Boolean = false
-        private set
+    private var _isInitialized: Boolean = false
+
+    val isInitialized: Boolean
+        get() {
+            if (_isInitialized && storage != null) return true
+            return try {
+                FirebaseApp.getInstance()
+                storage = Firebase.storage
+                _isInitialized = true
+                true
+            } catch (e: Throwable) {
+                _isInitialized = false
+                storage = null
+                false
+            }
+        }
 
     init {
-        try {
-            FirebaseApp.getInstance()
-            storage = Firebase.storage
-            isInitialized = true
-        } catch (e: Exception) {
-            Log.e("StorageRepository", "Firebase not initialized", e)
-            isInitialized = false
-        }
+        // Initial evaluation
+        isInitialized
     }
 
     /**
@@ -41,7 +49,7 @@ class StorageRepository {
      * Category could be wedding, prewedding, etc.
      */
     fun uploadPortfolioMedia(category: String, uri: Uri): Flow<UploadState> = callbackFlow {
-        if (!isInitialized) {
+        if (!isInitialized || storage == null) {
             trySend(UploadState.Error("Storage not initialized"))
             close()
             return@callbackFlow
@@ -82,7 +90,7 @@ class StorageRepository {
      * Uploads media for a specific customer's private gallery.
      */
     fun uploadPrivateGalleryMedia(customerId: String, bookingId: String, uri: Uri): Flow<UploadState> = callbackFlow {
-        if (!isInitialized) {
+        if (!isInitialized || storage == null) {
             trySend(UploadState.Error("Storage not initialized"))
             close()
             return@callbackFlow
@@ -117,12 +125,18 @@ class StorageRepository {
     }
 
     suspend fun listPrivateGalleryFiles(customerId: String, bookingId: String): List<String> {
-        if (!isInitialized) return emptyList()
+        if (!isInitialized || storage == null) return emptyList()
         return try {
             val storageRef = storage!!.reference.child("private-galleries/$customerId/$bookingId")
             val listResult = storageRef.listAll().await()
-            val urls = listResult.items.map { item ->
-                item.downloadUrl.await().toString()
+            val urls = mutableListOf<String>()
+            for (item in listResult.items) {
+                try {
+                    val url = item.downloadUrl.await().toString()
+                    urls.add(url)
+                } catch (e: Exception) {
+                    Log.w("StorageRepository", "Could not resolve URL for item ${item.name}", e)
+                }
             }
             urls
         } catch (e: Exception) {
@@ -131,7 +145,7 @@ class StorageRepository {
         }
     }
     suspend fun deleteMedia(url: String): Boolean {
-        if (!isInitialized) return false
+        if (!isInitialized || storage == null) return false
         return try {
             val storageRef = storage!!.getReferenceFromUrl(url)
             storageRef.delete().await()

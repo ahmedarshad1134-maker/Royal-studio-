@@ -14,38 +14,59 @@ import kotlinx.coroutines.channels.awaitClose
 
 class FirebaseRepository {
     private var db: FirebaseFirestore? = null
-    var isInitialized: Boolean = false
-        private set
+    private var _isInitialized: Boolean = false
+
+    val isInitialized: Boolean
+        get() {
+            if (_isInitialized && db != null) return true
+            return try {
+                FirebaseApp.getInstance()
+                db = Firebase.firestore
+                _isInitialized = true
+                true
+            } catch (e: Throwable) {
+                _isInitialized = false
+                db = null
+                false
+            }
+        }
     
     init {
-        try {
-            // Check if Firebase is initialized
-            FirebaseApp.getInstance()
-            db = Firebase.firestore
-            isInitialized = true
-        } catch (e: Exception) {
-            Log.e("FirebaseRepository", "Firebase not initialized. Missing google-services.json?", e)
-            isInitialized = false
-        }
+        // Initial check
+        isInitialized
     }
 
     // Users
     suspend fun createUserProfile(user: UserDto) {
-        if (!isInitialized) return
-        db!!.collection("users").document(user.uid).set(user).await()
+        if (!isInitialized || db == null) return
+        // Secure role enforcement: Never allow non-admin client to set role to admin
+        val safeUser = if (user.role.equals("admin", ignoreCase = true)) {
+            user.copy(role = "customer")
+        } else {
+            user
+        }
+        db!!.collection("users").document(safeUser.uid).set(safeUser).await()
     }
 
     suspend fun getUserProfile(uid: String): UserDto? {
-        if (!isInitialized) return null
-        val snapshot = db!!.collection("users").document(uid).get().await()
-        return snapshot.toObject(UserDto::class.java)
+        if (!isInitialized || db == null || uid.isBlank()) return null
+        return try {
+            val snapshot = db!!.collection("users").document(uid).get().await()
+            snapshot.toObject(UserDto::class.java)
+        } catch (e: Exception) {
+            Log.e("FirebaseRepository", "Error getting user profile", e)
+            null
+        }
     }
 
     // Bookings
     suspend fun createBooking(booking: BookingDto): String {
-        if (!isInitialized) return "mock_booking_id"
+        if (!isInitialized || db == null) {
+            throw IllegalStateException("Firebase is not initialized. Please configure Firebase with google-services.json.")
+        }
         val docRef = if (booking.id.isNotBlank()) db!!.collection("bookings").document(booking.id) else db!!.collection("bookings").document()
-        docRef.set(booking).await()
+        val toSave = if (booking.id.isBlank()) booking.copy(id = docRef.id, referenceId = booking.referenceId.ifBlank { docRef.id }) else booking
+        docRef.set(toSave).await()
         return docRef.id
     }
 
@@ -55,7 +76,7 @@ class FirebaseRepository {
         adminNotes: String? = null,
         updatedBy: String = "admin"
     ): Boolean {
-        if (!isInitialized) return true
+        if (!isInitialized || db == null) return false
         return try {
             val docRef = db!!.collection("bookings").document(id)
             val snapshot = docRef.get().await()
@@ -97,7 +118,7 @@ class FirebaseRepository {
         adminNotes: String? = null,
         updatedBy: String = "admin"
     ): Boolean {
-        if (!isInitialized) return true
+        if (!isInitialized || db == null) return false
         return try {
             val docRef = db!!.collection("bookings").document(id)
             val snapshot = docRef.get().await()
@@ -152,26 +173,36 @@ class FirebaseRepository {
         awaitClose { listener.remove() }
     }
 
-    fun getCustomerBookings(email: String): Flow<List<BookingDto>> = callbackFlow {
-        if (!isInitialized) {
+    fun getCustomerBookings(customerId: String = "", email: String = ""): Flow<List<BookingDto>> = callbackFlow {
+        if (!isInitialized || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val listener = db!!.collection("bookings")
-            .whereEqualTo("email", email)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    close(error)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    val bookings = snapshot.toObjects(BookingDto::class.java)
-                    trySend(bookings)
-                }
+        val collection = db!!.collection("bookings")
+        val query = if (customerId.isNotBlank()) {
+            collection.whereEqualTo("customerId", customerId)
+        } else if (email.isNotBlank()) {
+            collection.whereEqualTo("email", email)
+        } else {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val listener = query.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                close(error)
+                return@addSnapshotListener
             }
+            if (snapshot != null) {
+                val bookings = snapshot.toObjects(BookingDto::class.java)
+                trySend(bookings)
+            }
+        }
         awaitClose { listener.remove() }
     }
+
+    fun getCustomerBookings(email: String): Flow<List<BookingDto>> = getCustomerBookings("", email)
 
     suspend fun getBookingById(id: String): BookingDto? {
         if (!isInitialized) return null
@@ -200,9 +231,26 @@ class FirebaseRepository {
         awaitClose { listener.remove() }
     }
     
-    suspend fun createService(service: ServiceDto) {
-        if (!isInitialized) return
-        db!!.collection("services").add(service).await()
+    suspend fun createService(service: ServiceDto): String {
+        if (!isInitialized) return ""
+        val docRef = if (service.id.isNotBlank()) {
+            db!!.collection("services").document(service.id)
+        } else {
+            db!!.collection("services").document()
+        }
+        val toSave = if (service.id.isBlank()) service.copy(id = docRef.id) else service
+        docRef.set(toSave).await()
+        return docRef.id
+    }
+
+    suspend fun updateService(service: ServiceDto) {
+        if (!isInitialized || service.id.isBlank()) return
+        db!!.collection("services").document(service.id).set(service).await()
+    }
+
+    suspend fun deleteService(id: String) {
+        if (!isInitialized || id.isBlank()) return
+        db!!.collection("services").document(id).delete().await()
     }
 
     // Packages
@@ -226,9 +274,26 @@ class FirebaseRepository {
         awaitClose { listener.remove() }
     }
 
-    suspend fun createPackage(pkg: PackageDto) {
-        if (!isInitialized) return
-        db!!.collection("packages").add(pkg).await()
+    suspend fun createPackage(pkg: PackageDto): String {
+        if (!isInitialized) return ""
+        val docRef = if (pkg.id.isNotBlank()) {
+            db!!.collection("packages").document(pkg.id)
+        } else {
+            db!!.collection("packages").document()
+        }
+        val toSave = if (pkg.id.isBlank()) pkg.copy(id = docRef.id) else pkg
+        docRef.set(toSave).await()
+        return docRef.id
+    }
+
+    suspend fun updatePackage(pkg: PackageDto) {
+        if (!isInitialized || pkg.id.isBlank()) return
+        db!!.collection("packages").document(pkg.id).set(pkg).await()
+    }
+
+    suspend fun deletePackage(id: String) {
+        if (!isInitialized || id.isBlank()) return
+        db!!.collection("packages").document(id).delete().await()
     }
 
     // Portfolio
@@ -305,9 +370,39 @@ class FirebaseRepository {
         awaitClose { listener.remove() }
     }
     
+    fun getAllReviews(): Flow<List<ReviewDto>> = callbackFlow {
+        if (!isInitialized) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val listener = db!!.collection("reviews")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    val items = snapshot.toObjects(ReviewDto::class.java)
+                    trySend(items)
+                }
+            }
+        awaitClose { listener.remove() }
+    }
+
     suspend fun createReview(review: ReviewDto) {
         if (!isInitialized) return
         db!!.collection("reviews").add(review).await()
+    }
+
+    suspend fun approveReview(id: String) {
+        if (!isInitialized || id.isBlank()) return
+        db!!.collection("reviews").document(id).update("approved", true).await()
+    }
+
+    suspend fun deleteReview(id: String) {
+        if (!isInitialized || id.isBlank()) return
+        db!!.collection("reviews").document(id).delete().await()
     }
 
     // Notifications
@@ -373,7 +468,9 @@ class FirebaseRepository {
     // --- Invoices & Receipts ---
 
     suspend fun createOrUpdateInvoice(invoice: InvoiceDto): String {
-        if (!isInitialized) return invoice.id.ifBlank { "mock_inv_${System.currentTimeMillis()}" }
+        if (!isInitialized || db == null) {
+            throw IllegalStateException("Firebase is not initialized. Please configure Firebase with google-services.json.")
+        }
         val docRef = if (invoice.id.isNotBlank()) {
             db!!.collection("invoices").document(invoice.id)
         } else {
@@ -461,7 +558,7 @@ class FirebaseRepository {
         notes: String,
         recordedBy: String
     ): Boolean {
-        if (!isInitialized) return true
+        if (!isInitialized || db == null) return false
         return try {
             val docRef = db!!.collection("invoices").document(invoiceId)
             val snapshot = docRef.get().await()
@@ -501,5 +598,41 @@ class FirebaseRepository {
         } catch (e: Exception) {
             false
         }
+    }
+
+    // --- Contact Messages ---
+
+    suspend fun createContactMessage(message: ContactMessageDto): String {
+        if (!isInitialized || db == null) {
+            throw IllegalStateException("Firebase is not initialized. Please configure Firebase with google-services.json.")
+        }
+        val docRef = if (message.id.isNotBlank()) {
+            db!!.collection("contactMessages").document(message.id)
+        } else {
+            db!!.collection("contactMessages").document()
+        }
+        val toSave = if (message.id.isBlank()) message.copy(id = docRef.id) else message
+        docRef.set(toSave).await()
+        return docRef.id
+    }
+
+    fun getContactMessages(): Flow<List<ContactMessageDto>> = callbackFlow {
+        if (!isInitialized || db == null) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val listener = db!!.collection("contactMessages")
+            .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    trySend(snapshot.toObjects(ContactMessageDto::class.java))
+                }
+            }
+        awaitClose { listener.remove() }
     }
 }

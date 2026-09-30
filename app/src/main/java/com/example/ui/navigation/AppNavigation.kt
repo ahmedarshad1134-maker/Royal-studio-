@@ -178,7 +178,7 @@ fun NavGraphBuilder.registerScreens(navController: NavController) {
         if (serviceId != null) {
             ServiceDetailScreen(serviceId = serviceId, navController = navController)
         } else {
-            PlaceholderScreen("Service Not Found")
+            PlaceholderScreen("Service Not Found", onBack = { navController.popBackStack() })
         }
     }
     composable(Screen.Packages.route) {
@@ -192,7 +192,7 @@ fun NavGraphBuilder.registerScreens(navController: NavController) {
         if (packageId != null) {
             PackageDetailScreen(packageId = packageId, navController = navController)
         } else {
-            PlaceholderScreen("Package Not Found")
+            PlaceholderScreen("Package Not Found", onBack = { navController.popBackStack() })
         }
     }
     composable(Screen.Booking.route) {

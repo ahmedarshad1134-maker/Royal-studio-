@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.util.Log
 import com.example.data.models.UserDto
+import com.example.data.models.UserRole
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -15,25 +16,33 @@ import java.util.Date
 
 class AuthRepository(private val dbRepository: FirebaseRepository) {
     private var auth: FirebaseAuth? = null
-    var isInitialized: Boolean = false
-        private set
+    private var _isInitialized: Boolean = false
+
+    val isInitialized: Boolean
+        get() {
+            if (_isInitialized && auth != null) return true
+            return try {
+                FirebaseApp.getInstance()
+                auth = Firebase.auth
+                _isInitialized = true
+                true
+            } catch (e: Throwable) {
+                _isInitialized = false
+                auth = null
+                false
+            }
+        }
 
     init {
-        try {
-            FirebaseApp.getInstance()
-            auth = Firebase.auth
-            isInitialized = true
-        } catch (e: Exception) {
-            Log.e("AuthRepository", "Firebase not initialized. Missing google-services.json?", e)
-            isInitialized = false
-        }
+        // Initial evaluation
+        isInitialized
     }
 
     val currentUser: FirebaseUser?
         get() = auth?.currentUser
 
     fun getAuthStateUpdates(): Flow<FirebaseUser?> = callbackFlow {
-        if (!isInitialized) {
+        if (!isInitialized || auth == null) {
             trySend(null)
             close()
             return@callbackFlow
@@ -46,7 +55,9 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
     }
 
     suspend fun signIn(email: String, password: String): Result<FirebaseUser> {
-        if (!isInitialized) return Result.failure(Exception("Firebase not configured."))
+        if (!isInitialized || auth == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
+        }
         return try {
             val result = auth!!.signInWithEmailAndPassword(email, password).await()
             val user = result.user ?: throw Exception("Login failed, user is null")
@@ -57,12 +68,14 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
     }
 
     suspend fun signUp(email: String, password: String, name: String, phone: String = ""): Result<FirebaseUser> {
-        if (!isInitialized) return Result.failure(Exception("Firebase not configured."))
+        if (!isInitialized || auth == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
+        }
         return try {
             val result = auth!!.createUserWithEmailAndPassword(email, password).await()
             val user = result.user ?: throw Exception("Signup failed, user is null")
             
-            // Create user document in Firestore
+            // Create user document in Firestore - strictly enforce "customer" role
             val userDto = UserDto(
                 uid = user.uid,
                 name = name,
@@ -81,12 +94,52 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
     }
 
     suspend fun signOut() {
-        if (!isInitialized) return
+        if (!isInitialized || auth == null) return
         auth?.signOut()
     }
     
-    suspend fun getUserRole(uid: String): String {
-        if (!isInitialized) return "customer" // fallback
-        return dbRepository.getUserProfile(uid)?.role ?: "customer"
+    /**
+     * Secure centralized user role resolution:
+     * 1. Inspects Firebase Auth ID Token custom claims (role == 'admin' or admin == true)
+     * 2. Inspects Firestore users/{uid} document role field
+     * Never trusts role supplied from client UI.
+     */
+    suspend fun getUserRole(uid: String, forceRefresh: Boolean = false): UserRole {
+        if (!isInitialized || uid.isBlank()) return UserRole.CUSTOMER
+
+        // Check custom claim on current FirebaseUser token if uid matches
+        val user = auth?.currentUser
+        if (user != null && user.uid == uid) {
+            try {
+                val tokenResult = user.getIdToken(forceRefresh).await()
+                val claims = tokenResult.claims
+                val roleClaim = claims["role"] as? String
+                val adminClaim = claims["admin"] as? Boolean
+                if (roleClaim.equals("admin", ignoreCase = true) || adminClaim == true) {
+                    return UserRole.ADMIN
+                }
+            } catch (e: Exception) {
+                Log.w("AuthRepository", "Failed to retrieve custom claims from ID token", e)
+            }
+        }
+
+        // Check Firestore user profile
+        return try {
+            val profile = dbRepository.getUserProfile(uid)
+            UserRole.fromString(profile?.role)
+        } catch (e: Exception) {
+            Log.e("AuthRepository", "Failed to retrieve user profile from Firestore", e)
+            UserRole.CUSTOMER
+        }
+    }
+
+    suspend fun isCurrentUserAdmin(forceRefresh: Boolean = false): Boolean {
+        val uid = currentUser?.uid ?: return false
+        return getUserRole(uid, forceRefresh) == UserRole.ADMIN
+    }
+
+    suspend fun getUserProfile(uid: String): UserDto? {
+        if (!isInitialized || uid.isBlank()) return null
+        return dbRepository.getUserProfile(uid)
     }
 }

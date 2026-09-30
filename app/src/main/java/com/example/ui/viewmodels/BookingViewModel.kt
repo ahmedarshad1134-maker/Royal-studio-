@@ -36,7 +36,8 @@ data class BookingUiState(
     
     val isSubmitting: Boolean = false,
     val submissionError: String? = null,
-    val submittedBooking: BookingItem? = null
+    val submittedBooking: BookingItem? = null,
+    val studioWhatsApp: String = "+916289172657"
 )
 
 class BookingViewModel : ViewModel() {
@@ -44,6 +45,25 @@ class BookingViewModel : ViewModel() {
     val uiState: StateFlow<BookingUiState> = _uiState.asStateFlow()
     private val repository = RepositoryProvider.firebaseRepository
     private val authRepo = RepositoryProvider.authRepository
+
+    init {
+        loadStudioSettings()
+    }
+
+    private fun loadStudioSettings() {
+        viewModelScope.launch {
+            if (repository.isInitialized) {
+                try {
+                    val settings = repository.getStudioSettings()
+                    if (settings != null && settings.whatsapp.isNotBlank()) {
+                        _uiState.update { it.copy(studioWhatsApp = settings.whatsapp) }
+                    }
+                } catch (e: Exception) {
+                    // Fall back to default "+916289172657"
+                }
+            }
+        }
+    }
 
     private fun generateReferenceId(): String {
         val year = Calendar.getInstance().get(Calendar.YEAR)
@@ -232,12 +252,10 @@ class BookingViewModel : ViewModel() {
                     }
                 }
             } else {
-                delay(1200)
                 _uiState.update { 
                     it.copy(
                         isSubmitting = false,
-                        submittedBooking = newBooking,
-                        submissionError = null
+                        submissionError = "Firebase service is not initialized. Please ensure google-services.json is configured in the app/ folder."
                     ) 
                 }
             }

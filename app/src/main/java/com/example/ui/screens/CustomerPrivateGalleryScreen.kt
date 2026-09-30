@@ -49,6 +49,7 @@ class PrivateGalleryViewModel : ViewModel() {
 
     private val storageRepo = RepositoryProvider.storageRepository
     private val authRepo = RepositoryProvider.authRepository
+    private val dbRepo = RepositoryProvider.firebaseRepository
 
     fun loadGallery(bookingId: String) {
         viewModelScope.launch {
@@ -59,16 +60,52 @@ class PrivateGalleryViewModel : ViewModel() {
                 return@launch
             }
             if (!storageRepo.isInitialized) {
-                _uiState.update { it.copy(isLoading = false, error = "Cloud media storage is connecting. Please check back shortly.") }
+                _uiState.update { it.copy(isLoading = false, error = "Cloud media storage is not initialized. Please verify Firebase configuration.") }
                 return@launch
             }
             
             try {
-                val urls = storageRepo.listPrivateGalleryFiles(user.uid, bookingId)
+                // Verify user authorization:
+                // Admins can view any customer gallery.
+                // Customers can strictly view ONLY galleries for their own bookings.
+                val role = authRepo.getUserRole(user.uid)
+                val isAdmin = role == com.example.data.models.UserRole.ADMIN
+
+                var targetCustomerId = user.uid
+
+                if (bookingId.isNotBlank() && dbRepo.isInitialized) {
+                    val booking = dbRepo.getBookingById(bookingId)
+                    if (booking != null) {
+                        val isOwner = (booking.customerId == user.uid) || 
+                                      (booking.email.isNotBlank() && booking.email.equals(user.email, ignoreCase = true))
+                        if (!isOwner && !isAdmin) {
+                            _uiState.update { 
+                                it.copy(
+                                    isLoading = false, 
+                                    error = "Access Denied: You do not have permission to view another customer's private gallery."
+                                ) 
+                            }
+                            return@launch
+                        }
+                        if (isAdmin && booking.customerId.isNotBlank()) {
+                            targetCustomerId = booking.customerId
+                        }
+                    } else if (!isAdmin) {
+                        _uiState.update { 
+                            it.copy(
+                                isLoading = false, 
+                                error = "Access Denied: Requested booking was not found or is inaccessible."
+                            ) 
+                        }
+                        return@launch
+                    }
+                }
+
+                val urls = storageRepo.listPrivateGalleryFiles(targetCustomerId, bookingId)
                 if (urls.isEmpty()) {
-                    _uiState.update { it.copy(isLoading = false, error = "Deliverables are being processed by our post-production studio.") }
+                    _uiState.update { it.copy(isLoading = false, mediaUrls = emptyList(), error = "Deliverables are currently being curated by our post-production studio.") }
                 } else {
-                    _uiState.update { it.copy(isLoading = false, mediaUrls = urls) }
+                    _uiState.update { it.copy(isLoading = false, mediaUrls = urls, error = null) }
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLoading = false, error = e.message ?: "Failed to load private media deliverables.") }
