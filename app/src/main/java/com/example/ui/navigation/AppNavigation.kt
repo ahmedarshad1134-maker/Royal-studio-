@@ -4,8 +4,17 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -16,10 +25,21 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.example.data.repository.RepositoryProvider
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavType
@@ -50,6 +70,8 @@ fun RoyalStudioApp() {
     val navController = rememberNavController()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val authRepo = RepositoryProvider.authRepository
+    val currentUser by authRepo.getAuthStateUpdates().collectAsState(initial = authRepo.currentUser)
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
@@ -92,7 +114,15 @@ fun RoyalStudioApp() {
                     topBar = {
                         RoyalTopAppBar(
                             title = currentScreen.title,
-                            onNavigationIconClick = { }
+                            onNavigationIconClick = { },
+                            actions = {
+                                TopBarAuthAction(
+                                    currentUser = currentUser,
+                                    onSignInClick = { navController.navigate(Screen.CustomerArea.route) },
+                                    onSignOutClick = { scope.launch { authRepo.signOut() } },
+                                    onProfileClick = { navController.navigate(Screen.CustomerArea.route) }
+                                )
+                            }
                         )
                     }
                 ) { innerPadding ->
@@ -143,7 +173,15 @@ fun RoyalStudioApp() {
                     topBar = {
                         RoyalTopAppBar(
                             title = currentScreen.title,
-                            onNavigationIconClick = { scope.launch { drawerState.open() } }
+                            onNavigationIconClick = { scope.launch { drawerState.open() } },
+                            actions = {
+                                TopBarAuthAction(
+                                    currentUser = currentUser,
+                                    onSignInClick = { navController.navigate(Screen.CustomerArea.route) },
+                                    onSignOutClick = { scope.launch { authRepo.signOut() } },
+                                    onProfileClick = { navController.navigate(Screen.CustomerArea.route) }
+                                )
+                            }
                         )
                     }
                 ) { innerPadding ->
@@ -155,6 +193,64 @@ fun RoyalStudioApp() {
                         registerScreens(navController)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBarAuthAction(
+    currentUser: com.google.firebase.auth.FirebaseUser?,
+    onSignInClick: () -> Unit,
+    onSignOutClick: () -> Unit,
+    onProfileClick: () -> Unit
+) {
+    if (currentUser == null) {
+        FilledTonalButton(
+            onClick = onSignInClick,
+            modifier = Modifier.padding(end = 8.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.AccountCircle,
+                contentDescription = "Sign In",
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Sign In", style = MaterialTheme.typography.labelMedium)
+        }
+    } else {
+        var menuExpanded by remember { mutableStateOf(false) }
+        Box(modifier = Modifier.padding(end = 8.dp)) {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(
+                    imageVector = Icons.Default.AccountCircle,
+                    contentDescription = "Customer Profile",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Customer Area / Profile") },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    onClick = {
+                        menuExpanded = false
+                        onProfileClick()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Sign Out", color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = { Icon(Icons.Default.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        menuExpanded = false
+                        onSignOutClick()
+                    }
+                )
             }
         }
     }
@@ -211,7 +307,10 @@ fun NavGraphBuilder.registerScreens(navController: NavController) {
         CustomerAreaScreen(navController = navController)
     }
     composable(Screen.CustomerPrivateGallery.route) {
-        CustomerAreaScreen(navController = navController)
+        CustomerPrivateGalleryScreen(
+            bookingId = "",
+            navController = navController
+        )
     }
     composable(
         route = Screen.PrivateGallery.route,

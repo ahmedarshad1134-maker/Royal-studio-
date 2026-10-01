@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -16,7 +17,8 @@ import androidx.compose.ui.text.font.FontWeight
 @Composable
 fun RoyalTopAppBar(
     title: String,
-    onNavigationIconClick: () -> Unit
+    onNavigationIconClick: () -> Unit,
+    actions: @Composable RowScope.() -> Unit = {}
 ) {
     CenterAlignedTopAppBar(
         title = {
@@ -35,6 +37,7 @@ fun RoyalTopAppBar(
                 )
             }
         },
+        actions = actions,
         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
             scrolledContainerColor = MaterialTheme.colorScheme.surface

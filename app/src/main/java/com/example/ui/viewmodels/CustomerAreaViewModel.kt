@@ -22,6 +22,8 @@ data class CustomerAreaUiState(
     val isAuthenticating: Boolean = false,
     val authError: String? = null,
     val isSignUpMode: Boolean = false,
+    val passwordResetSent: Boolean = false,
+    val passwordResetMessage: String? = null,
     
     // Customer Info
     val customerName: String = "",
@@ -130,6 +132,82 @@ class CustomerAreaViewModel : ViewModel() {
                 }
             }
         }
+    }
+
+    fun signInWithGoogle(idToken: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthenticating = true, authError = null) }
+            val result = authRepo.signInWithGoogle(idToken)
+            if (result.isSuccess) {
+                val user = result.getOrNull()
+                val role = authRepo.getUserRole(user?.uid ?: "")
+                if (role == UserRole.ADMIN) {
+                    authRepo.signOut()
+                    _uiState.update { 
+                        it.copy(
+                            isAuthenticating = false, 
+                            authError = "Administrator accounts cannot access the Customer Area. Please use the Admin Portal."
+                        ) 
+                    }
+                } else {
+                    _uiState.update { 
+                        it.copy(isAuthenticating = false, authError = null) 
+                    }
+                    if (user != null) {
+                        loadCustomerData(user.uid, user.email ?: "")
+                    }
+                }
+            } else {
+                _uiState.update { 
+                    it.copy(
+                        isAuthenticating = false, 
+                        authError = result.exceptionOrNull()?.message ?: "Google authentication failed. Please try again."
+                    ) 
+                }
+            }
+        }
+    }
+
+    fun sendPasswordReset(email: String) {
+        val trimmed = email.trim()
+        if (trimmed.isBlank()) {
+            _uiState.update { it.copy(authError = "Please enter your email address to reset password.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthenticating = true, authError = null, passwordResetMessage = null) }
+            val result = authRepo.sendPasswordResetEmail(trimmed)
+            if (result.isSuccess) {
+                _uiState.update { 
+                    it.copy(
+                        isAuthenticating = false,
+                        passwordResetSent = true,
+                        passwordResetMessage = "Password reset email sent to $trimmed. Please check your inbox.",
+                        authError = null
+                    )
+                }
+            } else {
+                _uiState.update { 
+                    it.copy(
+                        isAuthenticating = false,
+                        passwordResetSent = false,
+                        authError = result.exceptionOrNull()?.message ?: "Failed to send password reset email."
+                    )
+                }
+            }
+        }
+    }
+
+    fun setAuthenticating(isAuth: Boolean) {
+        _uiState.update { it.copy(isAuthenticating = isAuth) }
+    }
+
+    fun setAuthError(error: String?) {
+        _uiState.update { it.copy(authError = error, isAuthenticating = false) }
+    }
+
+    fun clearPasswordResetMessage() {
+        _uiState.update { it.copy(passwordResetMessage = null, passwordResetSent = false) }
     }
 
     private suspend fun loadCustomerData(currentUid: String, currentEmail: String) {

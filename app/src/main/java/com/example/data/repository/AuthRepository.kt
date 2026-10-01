@@ -93,6 +93,68 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
         }
     }
 
+    suspend fun signInWithGoogle(idToken: String): Result<FirebaseUser> {
+        if (!isInitialized || auth == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
+        }
+        return try {
+            val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
+            val result = auth!!.signInWithCredential(credential).await()
+            val user = result.user ?: throw Exception("Google sign-in failed, user is null")
+            ensureCustomerProfile(user)
+            Result.success(user)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun signInWithFacebook(accessToken: String): Result<FirebaseUser> {
+        if (!isInitialized || auth == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
+        }
+        return try {
+            val credential = com.google.firebase.auth.FacebookAuthProvider.getCredential(accessToken)
+            val result = auth!!.signInWithCredential(credential).await()
+            val user = result.user ?: throw Exception("Facebook sign-in failed, user is null")
+            ensureCustomerProfile(user)
+            Result.success(user)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sendPasswordResetEmail(email: String): Result<Unit> {
+        if (!isInitialized || auth == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
+        }
+        return try {
+            auth!!.sendPasswordResetEmail(email.trim()).await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun ensureCustomerProfile(user: FirebaseUser) {
+        try {
+            val existingProfile = dbRepository.getUserProfile(user.uid)
+            if (existingProfile == null) {
+                val userDto = UserDto(
+                    uid = user.uid,
+                    name = user.displayName ?: "",
+                    email = user.email ?: "",
+                    phone = user.phoneNumber ?: "",
+                    role = "customer",
+                    createdAt = Date(),
+                    updatedAt = Date()
+                )
+                dbRepository.createUserProfile(userDto)
+            }
+        } catch (e: Exception) {
+            Log.w("AuthRepository", "Error ensuring customer profile in Firestore", e)
+        }
+    }
+
     suspend fun signOut() {
         if (!isInitialized || auth == null) return
         auth?.signOut()

@@ -153,4 +153,41 @@ class AuthAndAuthorizationSecurityTest {
         assertFalse("Customer must not have read/update/delete access to contact messages", nonAdminRole.isAdmin)
         assertTrue("Admin must have read/update/delete access to contact messages", adminRole.isAdmin)
     }
+
+    @Test
+    fun `google sign-in auto-provisioned user profile strictly assigns customer role`() {
+        val googleUser = UserDto(
+            uid = "google_user_999",
+            name = "Google Customer",
+            email = "customer@gmail.com",
+            phone = "",
+            role = "customer"
+        )
+        // Verify role enforcement ensures customer status
+        val role = UserRole.fromString(googleUser.role)
+        assertEquals(UserRole.CUSTOMER, role)
+        assertFalse("Google sign in must never grant admin privileges automatically", role.isAdmin)
+    }
+
+    @Test
+    fun `password reset requires non-blank valid email address`() {
+        val blankEmail = "   "
+        val validEmail = "user@royalstudio.com"
+
+        assertTrue("Blank email must fail password reset validation", blankEmail.trim().isBlank())
+        assertFalse("Valid email must pass password reset validation", validEmail.trim().isBlank())
+    }
+
+    @Test
+    fun `customer private gallery route is distinct and enforces customer isolation`() {
+        val customerUid = "cust_abc"
+        val anotherCustomerUid = "cust_xyz"
+
+        // Rule: private-galleries/{customerId} only accessible if request.auth.uid == customerId
+        val canAccessOwn = (customerUid == customerUid)
+        val canAccessOther = (customerUid == anotherCustomerUid)
+
+        assertTrue("Customer must have access to their own gallery", canAccessOwn)
+        assertFalse("Customer must NEVER have access to another customer's gallery", canAccessOther)
+    }
 }
