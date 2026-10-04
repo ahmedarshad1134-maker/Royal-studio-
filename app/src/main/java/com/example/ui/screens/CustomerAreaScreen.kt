@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -107,15 +109,31 @@ fun CustomerAreaScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    if (uiState.isAuthenticated) {
-        val booking = uiState.bookingData
-        if (booking != null) {
+    if (uiState.isAdminSession) {
+        AdminSessionCard(
+            onGoToAdmin = { navController.navigate(Screen.Admin.route) },
+            onSignOut = { viewModel.logout() },
+            onBack = { navController.popBackStack() }
+        )
+    } else if (uiState.isAuthenticated) {
+        val selected = uiState.selectedBooking
+        if (selected != null) {
             CustomerDashboardScreen(
                 customerName = uiState.customerName,
-                bookingData = booking,
+                bookingData = selected,
                 onLogout = { viewModel.logout() },
                 onContactSupport = { navController.navigate(Screen.Contact.route) },
-                onOpenGallery = { navController.navigate(Screen.PrivateGallery.createRoute(booking.id)) }
+                onOpenGallery = { navController.navigate(Screen.PrivateGallery.createRoute(selected.id)) },
+                onBack = { viewModel.clearSelectedBooking() }
+            )
+        } else if (uiState.bookings.isNotEmpty()) {
+            CustomerBookingsListScreen(
+                customerName = uiState.customerName,
+                bookings = uiState.bookings,
+                onSelectBooking = { viewModel.selectBooking(it) },
+                onBookAnother = { navController.navigate(Screen.Booking.route) },
+                onLogout = { viewModel.logout() },
+                onBack = { navController.popBackStack() }
             )
         } else {
             CustomerNoBookingsScreen(
@@ -142,6 +160,99 @@ fun CustomerAreaScreen(
             onClearError = { viewModel.clearError() },
             onClearResetMessage = { viewModel.clearPasswordResetMessage() }
         )
+    }
+}
+
+@Composable
+private fun AdminSessionCard(
+    onGoToAdmin: () -> Unit,
+    onSignOut: () -> Unit,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = "Customer Area",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AdminPanelSettings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "You are signed in as an administrator",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Customer Area bookings and features are reserved for customer accounts. Please proceed to the Admin Panel to manage studio operations.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = onGoToAdmin,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Go to Admin Panel")
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = onSignOut,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Sign out")
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -659,8 +770,12 @@ private fun CustomerDashboardScreen(
     onLogout: () -> Unit,
     onContactSupport: () -> Unit,
     onOpenGallery: () -> Unit,
+    onBack: (() -> Unit)? = null,
     notificationViewModel: NotificationViewModel = viewModel()
 ) {
+    if (onBack != null) {
+        BackHandler { onBack() }
+    }
     val scrollState = rememberScrollState()
     val notificationState by notificationViewModel.uiState.collectAsState()
     var showNotifications by remember { mutableStateOf(false) }
@@ -685,18 +800,36 @@ private fun CustomerDashboardScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Welcome back,",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                )
-                Text(
-                    text = customerName,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (onBack != null) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Back to bookings",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                }
+                Column {
+                    Text(
+                        text = "Welcome back,",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = customerName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
             }
             
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1327,5 +1460,291 @@ fun CustomerInvoiceCard(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CustomerBookingsListScreen(
+    customerName: String,
+    bookings: List<CustomerBookingData>,
+    onSelectBooking: (CustomerBookingData) -> Unit,
+    onBookAnother: () -> Unit,
+    onLogout: () -> Unit,
+    onBack: () -> Unit,
+    notificationViewModel: NotificationViewModel = viewModel()
+) {
+    val scrollState = rememberScrollState()
+    val notificationState by notificationViewModel.uiState.collectAsState()
+    var showNotifications by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val dateFormatter = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // Top Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+            ) {
+                Text(
+                    text = "Welcome back,",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                )
+                Text(
+                    text = customerName,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+            
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { showNotifications = true },
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+                ) {
+                    BadgedBox(
+                        badge = {
+                            if (notificationState.unreadCount > 0) {
+                                Badge(containerColor = MaterialTheme.colorScheme.error) {
+                                    Text(notificationState.unreadCount.toString())
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Notifications,
+                            contentDescription = "Notifications",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onLogout,
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Logout,
+                        contentDescription = "Logout",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Your Bookings & Sessions",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "${bookings.size} booking${if (bookings.size > 1) "s" else ""} found. Tap to view timeline, invoice & private gallery.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                    )
+                }
+            }
+
+            bookings.forEach { booking ->
+                CustomerBookingCard(
+                    booking = booking,
+                    dateFormatter = dateFormatter,
+                    onClick = { onSelectBooking(booking) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = onBookAnother,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Book Another Event or Session")
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+
+    if (showNotifications) {
+        ModalBottomSheet(
+            onDismissRequest = { showNotifications = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+            dragHandle = null
+        ) {
+            NotificationSheetContent(
+                title = "Your Notifications",
+                isLoading = notificationState.isLoading,
+                notifications = notificationState.notifications,
+                onMarkAsRead = { notificationViewModel.markAsRead(it) },
+                onMarkAllAsRead = { notificationViewModel.markAllAsRead() },
+                onClose = {
+                    scope.launch { sheetState.hide() }.invokeOnCompletion {
+                        if (!sheetState.isVisible) showNotifications = false
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CustomerBookingCard(
+    booking: CustomerBookingData,
+    dateFormatter: SimpleDateFormat,
+    onClick: () -> Unit
+) {
+    val (statusText, statusColor) = when(booking.status) {
+        BookingStatus.NEW -> "Enquiry Received" to Color(0xFF3498db)
+        BookingStatus.CONTACTED -> "Contacted" to Color(0xFF9b59b6)
+        BookingStatus.QUOTATION_SENT -> "Quotation Sent" to Color(0xFFe67e22)
+        BookingStatus.CONFIRMED -> "Confirmed" to Color(0xFF2ecc71)
+        BookingStatus.COMPLETED -> "Completed" to MaterialTheme.colorScheme.primary
+        BookingStatus.CANCELLED -> "Cancelled" to MaterialTheme.colorScheme.error
+    }
+
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "#${booking.referenceId}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = statusColor.copy(alpha = 0.15f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.3f))
+                ) {
+                    Text(
+                        text = statusText,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = booking.eventType,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Event,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (booking.eventDate > 0) dateFormatter.format(Date(booking.eventDate)) else "Date Pending",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+
+            if (booking.location.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = booking.location,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (booking.invoice != null) "Invoice: ${booking.invoice.invoiceNumber} (${booking.invoice.paymentStatus})" else "Package: ${booking.selectedPackage}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Text(
+                    text = "View Details →",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
     }
 }

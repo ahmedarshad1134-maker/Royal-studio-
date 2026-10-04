@@ -48,10 +48,12 @@ fun AdminBookingsSection(
             conflictWarning = state.conflictWarning,
             statusMessage = state.statusMessage,
             errorMessage = state.errorMessage,
+            validNextStatuses = viewModel.getValidNextStatuses(state.selectedBooking!!.status),
             onBack = { viewModel.selectBooking(null) },
-            onUpdateStatus = { newStatus, note ->
-                viewModel.updateStatus(state.selectedBooking!!.id, newStatus, note)
+            onUpdateStatus = { newStatus, note, force ->
+                viewModel.updateStatus(state.selectedBooking!!.id, newStatus, note, forceConfirm = force)
             },
+            onClearConflictWarning = { viewModel.clearConflictWarning() },
             onSaveNotes = { notes ->
                 viewModel.saveInternalNotes(state.selectedBooking!!.id, notes)
             },
@@ -338,6 +340,14 @@ private fun AdminBookingCard(
     }
 }
 
+private data class PendingInvoiceParams(
+    val subtotal: Double,
+    val additionalCharges: Double,
+    val discount: Double,
+    val taxRate: Double,
+    val notes: String
+)
+
 @Composable
 private fun AdminBookingDetailView(
     booking: BookingDto,
@@ -346,8 +356,10 @@ private fun AdminBookingDetailView(
     conflictWarning: String?,
     statusMessage: String?,
     errorMessage: String?,
+    validNextStatuses: List<Pair<String, String>>,
     onBack: () -> Unit,
-    onUpdateStatus: (String, String) -> Unit,
+    onUpdateStatus: (String, String, Boolean) -> Unit,
+    onClearConflictWarning: () -> Unit,
     onSaveNotes: (String) -> Unit,
     onUpdateDetails: (String, Long, String, String) -> Unit,
     onDismissMessages: () -> Unit
@@ -359,10 +371,12 @@ private fun AdminBookingDetailView(
 
     var currentNotes by remember(booking.id) { mutableStateOf(booking.adminNotes) }
     var showStatusDialog by remember { mutableStateOf(false) }
-    var selectedNewStatus by remember { mutableStateOf(booking.status) }
+    var selectedNewStatus by remember { mutableStateOf(validNextStatuses.firstOrNull()?.first ?: booking.status) }
     var statusChangeNote by remember { mutableStateOf("") }
     var showEditDetailsDialog by remember { mutableStateOf(false) }
     var showCreateInvoiceDialog by remember { mutableStateOf(false) }
+    var showExistingInvoiceConfirmDialog by remember { mutableStateOf(false) }
+    var pendingInvoiceParams by remember { mutableStateOf<PendingInvoiceParams?>(null) }
 
     Column(
         modifier = Modifier
@@ -540,7 +554,7 @@ private fun AdminBookingDetailView(
                 ) {
                     Button(
                         onClick = {
-                            selectedNewStatus = booking.status
+                            selectedNewStatus = validNextStatuses.firstOrNull()?.first ?: booking.status
                             statusChangeNote = ""
                             showStatusDialog = true
                         },
@@ -563,7 +577,14 @@ private fun AdminBookingDetailView(
                     }
 
                     OutlinedButton(
-                        onClick = { showCreateInvoiceDialog = true },
+                        onClick = {
+                            val existing = invoiceViewModel.uiState.value.invoices.firstOrNull { it.bookingId == booking.id }
+                            if (existing != null) {
+                                showExistingInvoiceConfirmDialog = true
+                            } else {
+                                showCreateInvoiceDialog = true
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -868,14 +889,7 @@ private fun AdminBookingDetailView(
 
     // Status Change Dialog
     if (showStatusDialog) {
-        val statuses = listOf(
-            "NEW" to "New Enquiry",
-            "CONTACTED" to "Contacted Customer",
-            "QUOTATION_SENT" to "Quotation Sent",
-            "CONFIRMED" to "Confirmed Booking",
-            "COMPLETED" to "Completed Event",
-            "CANCELLED" to "Cancelled Booking"
-        )
+        val statuses = validNextStatuses
 
         AlertDialog(
             onDismissRequest = { showStatusDialog = false },
@@ -884,66 +898,124 @@ private fun AdminBookingDetailView(
             },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        text = "Select the new lifecycle state for #${booking.referenceId.ifBlank { booking.id }}:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    if (statuses.isEmpty()) {
+                        Text(
+                            text = "This booking is currently in status '${booking.status}'. No further transitions are available.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    } else {
+                        Text(
+                            text = "Select allowed transition for #${booking.referenceId.ifBlank { booking.id }} (current: ${booking.status}):",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                    statuses.forEach { (code, label) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedNewStatus = code }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = selectedNewStatus == code,
-                                onClick = { selectedNewStatus = code },
-                                colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (selectedNewStatus == code) FontWeight.Bold else FontWeight.Normal
+                        statuses.forEach { (code, label) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedNewStatus = code }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedNewStatus == code,
+                                    onClick = { selectedNewStatus = code },
+                                    colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
                                 )
-                                Text(
-                                    text = code,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (selectedNewStatus == code) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    Text(
+                                        text = code,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = statusChangeNote,
-                        onValueChange = { statusChangeNote = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Audit Note (Optional)") },
-                        placeholder = { Text("e.g. Deposit verified; date locked") },
-                        shape = RoundedCornerShape(8.dp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = statusChangeNote,
+                            onValueChange = { statusChangeNote = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Audit Note (Optional)") },
+                            placeholder = { Text("e.g. Deposit verified; date locked") },
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (statuses.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            showStatusDialog = false
+                            onUpdateStatus(selectedNewStatus, statusChangeNote, false)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Apply Transition")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStatusDialog = false }) {
+                    Text(if (statuses.isNotEmpty()) "Cancel" else "Close")
+                }
+            }
+        )
+    }
+
+    // Explicit Date Conflict Confirmation Dialog
+    if (conflictWarning != null) {
+        AlertDialog(
+            onDismissRequest = onClearConflictWarning,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Conflict",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Date Conflict Detected", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = conflictWarning,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Do you want to confirm this booking anyway?",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        showStatusDialog = false
-                        onUpdateStatus(selectedNewStatus, statusChangeNote)
+                        onClearConflictWarning()
+                        onUpdateStatus("CONFIRMED", statusChangeNote, true)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Apply Transition")
+                    Text("Confirm anyway")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showStatusDialog = false }) {
+                TextButton(onClick = onClearConflictWarning) {
                     Text("Cancel")
                 }
             }
@@ -1129,6 +1201,37 @@ private fun AdminBookingDetailView(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateInvoiceDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showExistingInvoiceConfirmDialog) {
+        val existing = invoiceViewModel.uiState.value.invoices.firstOrNull { it.bookingId == booking.id }
+        AlertDialog(
+            onDismissRequest = { showExistingInvoiceConfirmDialog = false },
+            title = {
+                Text("Invoice Already Exists", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "An invoice (${existing?.invoiceNumber ?: "INV"}) has already been created for this booking (${booking.referenceId.ifBlank { booking.id }}). Do you want to create another invoice?"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showExistingInvoiceConfirmDialog = false
+                        showCreateInvoiceDialog = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Create Another")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExistingInvoiceConfirmDialog = false }) {
                     Text("Cancel")
                 }
             }

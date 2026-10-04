@@ -39,13 +39,28 @@ class FirebaseRepository {
     // Users
     suspend fun createUserProfile(user: UserDto) {
         if (!isInitialized || db == null) return
+        val cleanEmail = user.email.trim().lowercase()
         // Secure role enforcement: Never allow non-admin client to set role to admin
         val safeUser = if (user.role.equals("admin", ignoreCase = true)) {
-            user.copy(role = "customer")
+            user.copy(role = "customer", email = cleanEmail)
         } else {
-            user
+            user.copy(email = cleanEmail)
         }
-        db!!.collection("users").document(safeUser.uid).set(safeUser).await()
+        db!!.collection("users").document(safeUser.uid)
+            .set(safeUser, com.google.firebase.firestore.SetOptions.merge())
+            .await()
+    }
+
+    suspend fun userProfileExists(uid: String): Result<Boolean> {
+        if (!isInitialized || db == null || uid.isBlank()) {
+            return Result.failure(IllegalStateException("Firebase is not initialized or UID is blank"))
+        }
+        return try {
+            val snapshot = db!!.collection("users").document(uid).get().await()
+            Result.success(snapshot.exists())
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     suspend fun getUserProfile(uid: String): UserDto? {
@@ -64,8 +79,15 @@ class FirebaseRepository {
         if (!isInitialized || db == null) {
             throw IllegalStateException("Firebase is not initialized. Please configure Firebase with google-services.json.")
         }
-        val docRef = if (booking.id.isNotBlank()) db!!.collection("bookings").document(booking.id) else db!!.collection("bookings").document()
-        val toSave = if (booking.id.isBlank()) booking.copy(id = docRef.id, referenceId = booking.referenceId.ifBlank { docRef.id }) else booking
+        // Always use a Firestore auto-generated document ID as the booking id
+        val docRef = db!!.collection("bookings").document()
+        val refId = booking.referenceId.ifBlank { docRef.id }
+        val cleanEmail = booking.email.trim().lowercase()
+        val toSave = booking.copy(
+            id = docRef.id,
+            referenceId = refId,
+            email = cleanEmail
+        )
         docRef.set(toSave).await()
         return docRef.id
     }
@@ -80,26 +102,38 @@ class FirebaseRepository {
         return try {
             val docRef = db!!.collection("bookings").document(id)
             val snapshot = docRef.get().await()
-            val currentBooking = snapshot.toObject(BookingDto::class.java)
+            val currentBooking = snapshot.toObject(BookingDto::class.java) ?: return false
 
-            val newAudit = AuditEntryDto(
-                status = newStatus,
-                updatedBy = updatedBy,
-                timestamp = System.currentTimeMillis(),
-                note = adminNotes ?: ""
-            )
-
-            val updatedAuditTrail = (currentBooking?.auditTrail ?: emptyList()) + newAudit
+            val statusChanged = currentBooking.status != newStatus
 
             val updates = mutableMapOf<String, Any>(
                 "status" to newStatus,
                 "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-                "updatedBy" to updatedBy,
-                "auditTrail" to updatedAuditTrail
+                "updatedBy" to updatedBy
             )
 
             if (adminNotes != null) {
                 updates["adminNotes"] = adminNotes
+            }
+
+            if (statusChanged) {
+                val newAudit = AuditEntryDto(
+                    status = newStatus,
+                    updatedBy = updatedBy,
+                    timestamp = System.currentTimeMillis(),
+                    note = adminNotes ?: "",
+                    adminOnly = false
+                )
+                updates["auditTrail"] = com.google.firebase.firestore.FieldValue.arrayUnion(newAudit)
+            } else if (!adminNotes.isNullOrBlank() && adminNotes != currentBooking.adminNotes) {
+                val noteAudit = AuditEntryDto(
+                    status = currentBooking.status,
+                    updatedBy = updatedBy,
+                    timestamp = System.currentTimeMillis(),
+                    note = "Internal notes updated",
+                    adminOnly = true
+                )
+                updates["auditTrail"] = com.google.firebase.firestore.FieldValue.arrayUnion(noteAudit)
             }
 
             docRef.update(updates).await()
@@ -121,26 +155,15 @@ class FirebaseRepository {
         if (!isInitialized || db == null) return false
         return try {
             val docRef = db!!.collection("bookings").document(id)
-            val snapshot = docRef.get().await()
-            val currentBooking = snapshot.toObject(BookingDto::class.java)
-
-            val newAudit = AuditEntryDto(
-                status = currentBooking?.status ?: "NEW",
-                updatedBy = updatedBy,
-                timestamp = System.currentTimeMillis(),
-                note = "Updated event details"
-            )
-            val updatedAuditTrail = (currentBooking?.auditTrail ?: emptyList()) + newAudit
-
             val updates = mutableMapOf<String, Any>(
                 "eventType" to eventType,
                 "eventDate" to eventDate,
                 "eventLocation" to eventLocation,
                 "packageId" to selectedPackage,
                 "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-                "updatedBy" to updatedBy,
-                "auditTrail" to updatedAuditTrail
+                "updatedBy" to updatedBy
             )
+
             if (adminNotes != null) {
                 updates["adminNotes"] = adminNotes
             }
@@ -180,26 +203,59 @@ class FirebaseRepository {
             return@callbackFlow
         }
         val collection = db!!.collection("bookings")
-        val query = if (customerId.isNotBlank()) {
-            collection.whereEqualTo("customerId", customerId)
-        } else if (email.isNotBlank()) {
-            collection.whereEqualTo("email", email)
-        } else {
+        val cleanEmail = email.trim().lowercase()
+
+        var customerBookings = emptyList<BookingDto>()
+        var emailBookings = emptyList<BookingDto>()
+
+        fun emitCombined() {
+            val combined = (customerBookings + emailBookings)
+                .distinctBy { it.id }
+                .sortedByDescending { it.createdAt?.time ?: 0L }
+            trySend(combined)
+        }
+
+        val listeners = mutableListOf<com.google.firebase.firestore.ListenerRegistration>()
+
+        if (customerId.isNotBlank()) {
+            val reg1 = collection.whereEqualTo("customerId", customerId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("FirebaseRepository", "Error in customerId bookings listener", error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        customerBookings = snapshot.toObjects(BookingDto::class.java)
+                        emitCombined()
+                    }
+                }
+            listeners.add(reg1)
+        }
+
+        if (cleanEmail.isNotBlank()) {
+            val reg2 = collection.whereEqualTo("email", cleanEmail)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("FirebaseRepository", "Error in email bookings listener", error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        emailBookings = snapshot.toObjects(BookingDto::class.java)
+                        emitCombined()
+                    }
+                }
+            listeners.add(reg2)
+        }
+
+        if (listeners.isEmpty()) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val listener = query.addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                close(error)
-                return@addSnapshotListener
-            }
-            if (snapshot != null) {
-                val bookings = snapshot.toObjects(BookingDto::class.java)
-                trySend(bookings)
-            }
+
+        awaitClose {
+            listeners.forEach { it.remove() }
         }
-        awaitClose { listener.remove() }
     }
 
     fun getCustomerBookings(email: String): Flow<List<BookingDto>> = getCustomerBookings("", email)
@@ -476,9 +532,57 @@ class FirebaseRepository {
         } else {
             db!!.collection("invoices").document()
         }
-        val invoiceToSave = if (invoice.id.isBlank()) invoice.copy(id = docRef.id) else invoice
+        val cleanEmail = invoice.customerEmail.trim().lowercase()
+        val invoiceToSave = invoice.copy(
+            id = if (invoice.id.isBlank()) docRef.id else invoice.id,
+            customerEmail = cleanEmail
+        )
         docRef.set(invoiceToSave).await()
         return docRef.id
+    }
+
+    suspend fun updateInvoicePaymentStatus(invoiceId: String, newStatus: String): Boolean {
+        if (!isInitialized || db == null) return false
+        return try {
+            val docRef = db!!.collection("invoices").document(invoiceId)
+            docRef.update(
+                mapOf(
+                    "paymentStatus" to newStatus,
+                    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                )
+            ).await()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun getNextInvoiceNumber(): String {
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        if (!isInitialized || db == null) {
+            return "INV-$currentYear-0001"
+        }
+        return try {
+            val counterRef = db!!.collection("counters").document("invoices")
+            val nextNumber = db!!.runTransaction { transaction ->
+                val snapshot = transaction.get(counterRef)
+                val fieldKey = "lastNumber_$currentYear"
+                val lastNum = if (snapshot.exists()) {
+                    snapshot.getLong(fieldKey) ?: 0L
+                } else {
+                    0L
+                }
+                val newNum = lastNum + 1
+                transaction.set(counterRef, mapOf(fieldKey to newNum), com.google.firebase.firestore.SetOptions.merge())
+                newNum
+            }.await()
+            val formatted = String.format(java.util.Locale.US, "%04d", nextNumber)
+            "INV-$currentYear-$formatted"
+        } catch (e: Exception) {
+            Log.e("FirebaseRepository", "Error generating invoice number", e)
+            val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            "INV-$currentYear-0001"
+        }
     }
 
     suspend fun getInvoiceById(invoiceId: String): InvoiceDto? {
@@ -491,17 +595,42 @@ class FirebaseRepository {
         }
     }
 
-    suspend fun getInvoiceByBookingId(bookingId: String): InvoiceDto? {
+    suspend fun getCustomerInvoicesList(email: String, customerId: String = ""): List<InvoiceDto> {
+        if (!isInitialized || db == null) return emptyList()
+        val collection = db!!.collection("invoices")
+        val cleanEmail = email.trim().lowercase()
+        val list = mutableListOf<InvoiceDto>()
+        try {
+            if (customerId.isNotBlank()) {
+                val snap1 = collection.whereEqualTo("customerId", customerId).get().await()
+                list.addAll(snap1.toObjects(InvoiceDto::class.java))
+            }
+            if (cleanEmail.isNotBlank()) {
+                val snap2 = collection.whereEqualTo("customerEmail", cleanEmail).get().await()
+                list.addAll(snap2.toObjects(InvoiceDto::class.java))
+            }
+        } catch (e: Exception) {
+            Log.e("FirebaseRepository", "Error getting customer invoices list", e)
+        }
+        return list.distinctBy { it.id }
+    }
+
+    suspend fun getInvoiceByBookingId(bookingId: String, email: String = "", customerId: String = ""): InvoiceDto? {
         if (!isInitialized) return null
         return try {
-            val snapshot = db!!.collection("invoices")
-                .whereEqualTo("bookingId", bookingId)
-                .limit(1)
-                .get()
-                .await()
-            if (!snapshot.isEmpty) {
-                snapshot.documents[0].toObject(InvoiceDto::class.java)
-            } else null
+            if (email.isNotBlank() || customerId.isNotBlank()) {
+                val invoices = getCustomerInvoicesList(email, customerId)
+                invoices.firstOrNull { it.bookingId == bookingId }
+            } else {
+                val snapshot = db!!.collection("invoices")
+                    .whereEqualTo("bookingId", bookingId)
+                    .limit(1)
+                    .get()
+                    .await()
+                if (!snapshot.isEmpty) {
+                    snapshot.documents[0].toObject(InvoiceDto::class.java)
+                } else null
+            }
         } catch (e: Exception) {
             null
         }
@@ -528,27 +657,65 @@ class FirebaseRepository {
     }
 
     fun getCustomerInvoices(email: String, customerId: String = ""): Flow<List<InvoiceDto>> = callbackFlow {
-        if (!isInitialized) {
+        if (!isInitialized || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val query = if (email.isNotBlank()) {
-            db!!.collection("invoices").whereEqualTo("customerEmail", email)
-        } else {
-            db!!.collection("invoices").whereEqualTo("customerId", customerId)
+        val collection = db!!.collection("invoices")
+        val cleanEmail = email.trim().lowercase()
+
+        var customerInvoices = emptyList<InvoiceDto>()
+        var emailInvoices = emptyList<InvoiceDto>()
+
+        fun emitCombined() {
+            val combined = (customerInvoices + emailInvoices)
+                .distinctBy { it.id }
+                .sortedByDescending { it.issueDate }
+            trySend(combined)
         }
 
-        val listener = query.addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                close(error)
-                return@addSnapshotListener
-            }
-            if (snapshot != null) {
-                trySend(snapshot.toObjects(InvoiceDto::class.java))
-            }
+        val listeners = mutableListOf<com.google.firebase.firestore.ListenerRegistration>()
+
+        if (customerId.isNotBlank()) {
+            val reg1 = collection.whereEqualTo("customerId", customerId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("FirebaseRepository", "Error in customerId invoices listener", error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        customerInvoices = snapshot.toObjects(InvoiceDto::class.java)
+                        emitCombined()
+                    }
+                }
+            listeners.add(reg1)
         }
-        awaitClose { listener.remove() }
+
+        if (cleanEmail.isNotBlank()) {
+            val reg2 = collection.whereEqualTo("customerEmail", cleanEmail)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("FirebaseRepository", "Error in customerEmail invoices listener", error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        emailInvoices = snapshot.toObjects(InvoiceDto::class.java)
+                        emitCombined()
+                    }
+                }
+            listeners.add(reg2)
+        }
+
+        if (listeners.isEmpty()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        awaitClose {
+            listeners.forEach { it.remove() }
+        }
     }
 
     suspend fun recordPayment(
@@ -557,43 +724,100 @@ class FirebaseRepository {
         method: String,
         notes: String,
         recordedBy: String
-    ): Boolean {
-        if (!isInitialized || db == null) return false
+    ): Result<PaymentRecordDto> {
+        if (!isInitialized || db == null) {
+            return Result.failure(IllegalStateException("Firebase is not initialized."))
+        }
         return try {
             val docRef = db!!.collection("invoices").document(invoiceId)
-            val snapshot = docRef.get().await()
-            val currentInvoice = snapshot.toObject(InvoiceDto::class.java) ?: return false
+            val record = db!!.runTransaction { transaction ->
+                val snapshot = transaction.get(docRef)
+                val currentInvoice = snapshot.toObject(InvoiceDto::class.java)
+                    ?: throw IllegalArgumentException("Invoice not found")
 
-            val newAmountPaid = (currentInvoice.amountPaid + amount).coerceAtMost(currentInvoice.totalAmount)
-            val newBalance = (currentInvoice.totalAmount - newAmountPaid).coerceAtLeast(0.0)
-            val newStatus = when {
-                newBalance <= 0.001 -> "Paid"
-                newAmountPaid > 0 -> "Partially Paid"
-                else -> "Unpaid"
-            }
+                if (amount > currentInvoice.balanceDue) {
+                    throw IllegalArgumentException("Payment exceeds balance due")
+                }
 
-            val receiptNumber = "RCP-${currentInvoice.invoiceNumber.replace("INV-", "")}-${currentInvoice.paymentRecords.size + 1}"
-            val newRecord = PaymentRecordDto(
-                paymentId = "PAY-${System.currentTimeMillis()}",
-                amount = amount,
-                method = method,
-                referenceNotes = notes,
-                recordedBy = recordedBy,
-                timestamp = System.currentTimeMillis(),
-                receiptId = receiptNumber
-            )
-
-            val updatedRecords = currentInvoice.paymentRecords + newRecord
-
-            docRef.update(
-                mapOf(
-                    "amountPaid" to newAmountPaid,
-                    "balanceDue" to newBalance,
-                    "paymentStatus" to newStatus,
-                    "paymentRecords" to updatedRecords,
-                    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                val receiptNumber = "RCP-${currentInvoice.invoiceNumber.replace("INV-", "")}-${currentInvoice.paymentRecords.size + 1}"
+                val newRecord = PaymentRecordDto(
+                    paymentId = "PAY-${System.currentTimeMillis()}",
+                    amount = amount,
+                    method = method,
+                    referenceNotes = notes,
+                    recordedBy = recordedBy,
+                    timestamp = System.currentTimeMillis(),
+                    receiptId = receiptNumber
                 )
-            ).await()
+
+                val updatedRecords = currentInvoice.paymentRecords + newRecord
+                val newAmountPaid = updatedRecords.sumOf { it.amount }
+                val newBalance = (currentInvoice.totalAmount - newAmountPaid).coerceAtLeast(0.0)
+                val newStatus = when {
+                    newBalance <= 0.001 -> "Paid"
+                    newAmountPaid > 0 -> "Partially Paid"
+                    else -> "Unpaid"
+                }
+
+                transaction.update(
+                    docRef,
+                    mapOf(
+                        "amountPaid" to newAmountPaid,
+                        "balanceDue" to newBalance,
+                        "paymentStatus" to newStatus,
+                        "paymentRecords" to updatedRecords,
+                        "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    )
+                )
+                newRecord
+            }.await()
+            Result.success(record)
+        } catch (e: Exception) {
+            val msg = e.cause?.message ?: e.message ?: "Failed to record payment"
+            Result.failure(Exception(msg))
+        }
+    }
+
+    // --- Blocked Dates ---
+    fun getBlockedDates(): Flow<List<BlockedDateDto>> = callbackFlow {
+        if (!isInitialized || db == null) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val listener = db!!.collection("blockedDates")
+            .orderBy("date", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    trySend(snapshot.toObjects(BlockedDateDto::class.java))
+                }
+            }
+        awaitClose { listener.remove() }
+    }
+
+    suspend fun addBlockedDate(date: Long, reason: String = ""): String {
+        if (!isInitialized || db == null) {
+            throw IllegalStateException("Firebase is not initialized.")
+        }
+        val docRef = db!!.collection("blockedDates").document()
+        val dto = BlockedDateDto(
+            id = docRef.id,
+            date = date,
+            reason = reason,
+            createdAt = java.util.Date()
+        )
+        docRef.set(dto).await()
+        return docRef.id
+    }
+
+    suspend fun removeBlockedDate(id: String): Boolean {
+        if (!isInitialized || db == null || id.isBlank()) return false
+        return try {
+            db!!.collection("blockedDates").document(id).delete().await()
             true
         } catch (e: Exception) {
             false
@@ -611,7 +835,11 @@ class FirebaseRepository {
         } else {
             db!!.collection("contactMessages").document()
         }
-        val toSave = if (message.id.isBlank()) message.copy(id = docRef.id) else message
+        val cleanEmail = message.email.trim().lowercase()
+        val toSave = message.copy(
+            id = if (message.id.isBlank()) docRef.id else message.id,
+            email = cleanEmail
+        )
         docRef.set(toSave).await()
         return docRef.id
     }

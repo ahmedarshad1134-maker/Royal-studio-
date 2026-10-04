@@ -6,6 +6,8 @@ import com.example.data.models.UserRole
 import com.example.ui.models.BookingItem
 import com.example.ui.models.ReviewItem
 import com.example.data.repository.RepositoryProvider
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,6 +19,7 @@ data class AdminUiState(
     val isAuthenticated: Boolean = false,
     val isAuthenticating: Boolean = false,
     val authError: String? = null,
+    val errorMessage: String? = null,
     
     // Stats
     val newEnquiriesCount: Int = 0,
@@ -48,12 +51,16 @@ class AdminViewModel : ViewModel() {
     private val repository = RepositoryProvider.firebaseRepository
     private val authRepo = RepositoryProvider.authRepository
 
+    private var sessionJob: Job? = null
+    private var dashboardStatsJob: Job? = null
+
     init {
         checkSession()
     }
 
     private fun checkSession() {
-        viewModelScope.launch {
+        sessionJob?.cancel()
+        sessionJob = viewModelScope.launch {
             authRepo.getAuthStateUpdates().collect { user ->
                 if (user != null) {
                     val role = authRepo.getUserRole(user.uid)
@@ -65,9 +72,14 @@ class AdminViewModel : ViewModel() {
                                 authError = null
                             )
                         }
-                        loadDashboardStats()
+                        dashboardStatsJob?.cancel()
+                        dashboardStatsJob = viewModelScope.launch {
+                            loadDashboardStats()
+                        }
                     } else {
                         // User is signed in but not an authorized admin
+                        dashboardStatsJob?.cancel()
+                        dashboardStatsJob = null
                         _uiState.update { 
                             it.copy(
                                 isAuthenticated = false,
@@ -76,6 +88,8 @@ class AdminViewModel : ViewModel() {
                         }
                     }
                 } else {
+                    dashboardStatsJob?.cancel()
+                    dashboardStatsJob = null
                     _uiState.update { 
                         it.copy(
                             isAuthenticated = false,
@@ -88,7 +102,7 @@ class AdminViewModel : ViewModel() {
     }
 
     fun login(email: String, password: String) {
-        val trimmedEmail = email.trim()
+        val trimmedEmail = email.trim().lowercase()
         if (trimmedEmail.isBlank() || password.isBlank()) {
             _uiState.update { it.copy(authError = "Please enter both administrator email and password.") }
             return
@@ -119,7 +133,7 @@ class AdminViewModel : ViewModel() {
                     _uiState.update { 
                         it.copy(isAuthenticated = true, isAuthenticating = false, authError = null)
                     }
-                    loadDashboardStats()
+                    // Relies strictly on checkSession auth-state listener to load dashboard stats
                 } else {
                     // Sign out immediately - unauthorized account
                     authRepo.signOut()
@@ -141,39 +155,75 @@ class AdminViewModel : ViewModel() {
         }
     }
 
-    private fun loadDashboardStats() {
+    private suspend fun loadDashboardStats() {
         if (!repository.isInitialized) return
         
-        viewModelScope.launch {
+        coroutineScope {
             launch {
                 repository.getBookings()
-                    .catch { /* Fallback to mock */ }
+                    .catch { e ->
+                        _uiState.update { it.copy(errorMessage = "Failed to load bookings: ${e.localizedMessage}") }
+                    }
                     .collect { bookings ->
-                        if (bookings.isNotEmpty()) {
-                            _uiState.update { state ->
-                                state.copy(
-                                    newEnquiriesCount = bookings.count { it.status == "NEW" },
-                                    confirmedBookingsCount = bookings.count { it.status == "CONFIRMED" },
-                                    completedEventsCount = bookings.count { it.status == "COMPLETED" },
-                                    upcomingEventsCount = bookings.count { it.status == "CONFIRMED" } // simplified logic
-                                )
-                            }
+                        val startOfToday = java.util.Calendar.getInstance().apply {
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }.timeInMillis
+
+                        _uiState.update { state ->
+                            state.copy(
+                                newEnquiriesCount = bookings.count { it.status == "NEW" },
+                                confirmedBookingsCount = bookings.count { it.status == "CONFIRMED" },
+                                completedEventsCount = bookings.count { it.status == "COMPLETED" },
+                                upcomingEventsCount = bookings.count { it.status == "CONFIRMED" && it.eventDate >= startOfToday }
+                            )
                         }
                     }
             }
             launch {
                 repository.getPendingReviews()
-                    .catch { /* Fallback */ }
+                    .catch { e ->
+                        _uiState.update { it.copy(errorMessage = "Failed to load reviews: ${e.localizedMessage}") }
+                    }
                     .collect { reviews ->
-                        if (reviews.isNotEmpty()) {
-                            _uiState.update { it.copy(pendingReviewsCount = reviews.size) }
-                        }
+                        _uiState.update { it.copy(pendingReviewsCount = reviews.size) }
+                    }
+            }
+            launch {
+                repository.getPortfolioItems()
+                    .catch { e ->
+                        _uiState.update { it.copy(errorMessage = "Failed to load portfolio: ${e.localizedMessage}") }
+                    }
+                    .collect { items ->
+                        _uiState.update { it.copy(portfolioCount = items.size) }
+                    }
+            }
+            launch {
+                repository.getServices()
+                    .catch { e ->
+                        _uiState.update { it.copy(errorMessage = "Failed to load services: ${e.localizedMessage}") }
+                    }
+                    .collect { services ->
+                        _uiState.update { it.copy(servicesCount = services.size) }
+                    }
+            }
+            launch {
+                repository.getPackages()
+                    .catch { e ->
+                        _uiState.update { it.copy(errorMessage = "Failed to load packages: ${e.localizedMessage}") }
+                    }
+                    .collect { packages ->
+                        _uiState.update { it.copy(packagesCount = packages.size) }
                     }
             }
         }
     }
     
     fun logout() {
+        dashboardStatsJob?.cancel()
+        dashboardStatsJob = null
         viewModelScope.launch {
             authRepo.signOut()
             _uiState.update { AdminUiState() }
@@ -185,6 +235,12 @@ class AdminViewModel : ViewModel() {
     }
     
     fun clearError() {
-        _uiState.update { it.copy(authError = null) }
+        _uiState.update { it.copy(authError = null, errorMessage = null) }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        dashboardStatsJob?.cancel()
+        sessionJob?.cancel()
     }
 }

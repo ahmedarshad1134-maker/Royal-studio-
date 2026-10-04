@@ -33,9 +33,10 @@ data class ContactUiState(
 )
 
 class ContactViewModel(
-    private val repository: FirebaseRepository = RepositoryProvider.firebaseRepository
+    private val repository: FirebaseRepository = RepositoryProvider.firebaseRepository,
+    private val authRepo: com.example.data.repository.AuthRepository = RepositoryProvider.authRepository
 ) : ViewModel() {
-    constructor() : this(RepositoryProvider.firebaseRepository)
+    constructor() : this(RepositoryProvider.firebaseRepository, RepositoryProvider.authRepository)
 
     private val _uiState = MutableStateFlow(ContactUiState())
     val uiState: StateFlow<ContactUiState> = _uiState.asStateFlow()
@@ -119,12 +120,23 @@ class ContactViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, submissionError = null) }
             
+            val authUser = authRepo.currentUser
+            val authUserEmail = authUser?.email?.trim()?.lowercase() ?: ""
+            val typedEmail = currentState.email.trim().lowercase()
+            val finalEmail = if (authUserEmail.isNotBlank()) authUserEmail else typedEmail
+
+            var finalMessage = currentState.message.trim()
+            if (authUserEmail.isNotBlank() && typedEmail.isNotBlank() && typedEmail != authUserEmail) {
+                val emailNote = "[Client specified alternate contact email: $typedEmail]"
+                finalMessage = if (finalMessage.isBlank()) emailNote else "$finalMessage\n$emailNote"
+            }
+
             try {
                 val messageDto = ContactMessageDto(
                     name = currentState.name.trim(),
                     phone = currentState.phone.trim(),
-                    email = currentState.email.trim(),
-                    message = currentState.message.trim(),
+                    email = finalEmail,
+                    message = finalMessage,
                     createdAt = Date()
                 )
                 repository.createContactMessage(messageDto)

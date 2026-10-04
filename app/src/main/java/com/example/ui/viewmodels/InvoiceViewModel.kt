@@ -131,63 +131,6 @@ class InvoiceViewModel : ViewModel() {
         val taxAmount = if (taxRate > 0) (taxableSubtotal * taxRate / 100.0) else 0.0
         val totalAmount = taxableSubtotal + taxAmount
 
-        val invoiceNumber = "INV-2026-${Random.nextInt(1000, 9999)}"
-
-        val lineItems = mutableListOf<LineItemDto>()
-        lineItems.add(
-            LineItemDto(
-                description = "${booking.eventType} Coverage - ${booking.packageId.ifBlank { "Standard Studio Service" }}",
-                amount = subtotal,
-                category = "PACKAGE"
-            )
-        )
-        if (charges > 0) {
-            lineItems.add(
-                LineItemDto(
-                    description = "Additional Service & Production Crew",
-                    amount = charges,
-                    category = "EXTRA"
-                )
-            )
-        }
-        if (discount > 0) {
-            lineItems.add(
-                LineItemDto(
-                    description = "Promotional / Loyalty Discount",
-                    amount = -discount,
-                    category = "DISCOUNT"
-                )
-            )
-        }
-
-        val invoice = InvoiceDto(
-            invoiceNumber = invoiceNumber,
-            bookingId = booking.id,
-            bookingReference = booking.referenceId.ifBlank { booking.id },
-            customerId = booking.customerId,
-            customerName = booking.customerName,
-            customerPhone = booking.phone,
-            customerEmail = booking.email,
-            eventType = booking.eventType,
-            eventDate = booking.eventDate,
-            eventLocation = booking.eventLocation,
-            selectedPackage = booking.packageId,
-            selectedServices = listOf(booking.eventType),
-            lineItems = lineItems,
-            subtotal = subtotal,
-            additionalCharges = charges,
-            discount = discount,
-            taxRate = taxRate,
-            taxAmount = taxAmount,
-            totalAmount = totalAmount,
-            amountPaid = 0.0,
-            balanceDue = totalAmount,
-            paymentStatus = "Unpaid",
-            issueDate = System.currentTimeMillis(),
-            dueDate = if (booking.eventDate > 0) booking.eventDate - (7 * 86400000L) else System.currentTimeMillis() + (14 * 86400000L),
-            notes = notes
-        )
-
         viewModelScope.launch {
             _uiState.update { it.copy(isActionInProgress = true, errorMessage = null) }
             if (!repository.isInitialized) {
@@ -200,6 +143,63 @@ class InvoiceViewModel : ViewModel() {
                 return@launch
             }
             try {
+                val invoiceNumber = repository.getNextInvoiceNumber()
+
+                val lineItems = mutableListOf<LineItemDto>()
+                lineItems.add(
+                    LineItemDto(
+                        description = "${booking.eventType} Coverage - ${booking.packageId.ifBlank { "Standard Studio Service" }}",
+                        amount = subtotal,
+                        category = "PACKAGE"
+                    )
+                )
+                if (charges > 0) {
+                    lineItems.add(
+                        LineItemDto(
+                            description = "Additional Service & Production Crew",
+                            amount = charges,
+                            category = "EXTRA"
+                        )
+                    )
+                }
+                if (discount > 0) {
+                    lineItems.add(
+                        LineItemDto(
+                            description = "Promotional / Loyalty Discount",
+                            amount = -discount,
+                            category = "DISCOUNT"
+                        )
+                    )
+                }
+
+                val invoice = InvoiceDto(
+                    invoiceNumber = invoiceNumber,
+                    bookingId = booking.id,
+                    bookingReference = booking.referenceId.ifBlank { booking.id },
+                    customerId = booking.customerId,
+                    customerName = booking.customerName,
+                    customerPhone = booking.phone,
+                    customerEmail = booking.email.trim().lowercase(),
+                    eventType = booking.eventType,
+                    eventDate = booking.eventDate,
+                    eventLocation = booking.eventLocation,
+                    selectedPackage = booking.packageId,
+                    selectedServices = listOf(booking.eventType),
+                    lineItems = lineItems,
+                    subtotal = subtotal,
+                    additionalCharges = charges,
+                    discount = discount,
+                    taxRate = taxRate,
+                    taxAmount = taxAmount,
+                    totalAmount = totalAmount,
+                    amountPaid = 0.0,
+                    balanceDue = totalAmount,
+                    paymentStatus = "Unpaid",
+                    issueDate = System.currentTimeMillis(),
+                    dueDate = if (booking.eventDate > 0) booking.eventDate - (7 * 86400000L) else System.currentTimeMillis() + (14 * 86400000L),
+                    notes = notes
+                )
+
                 val id = repository.createOrUpdateInvoice(invoice)
                 val created = invoice.copy(id = id)
 
@@ -240,6 +240,12 @@ class InvoiceViewModel : ViewModel() {
             return
         }
 
+        val target = _uiState.value.invoices.firstOrNull { it.id == invoiceId }
+        if (target != null && validAmount > target.balanceDue) {
+            _uiState.update { it.copy(errorMessage = "Payment exceeds balance due") }
+            return
+        }
+
         if (!repository.isInitialized) {
             _uiState.update {
                 it.copy(errorMessage = "Firebase is not initialized. Please configure google-services.json to record payments.")
@@ -249,7 +255,7 @@ class InvoiceViewModel : ViewModel() {
 
         viewModelScope.launch {
             _uiState.update { it.copy(isActionInProgress = true, errorMessage = null) }
-            val success = repository.recordPayment(
+            val result = repository.recordPayment(
                 invoiceId = invoiceId,
                 amount = validAmount,
                 method = method,
@@ -257,32 +263,24 @@ class InvoiceViewModel : ViewModel() {
                 recordedBy = currentAdmin
             )
 
-            if (success) {
-                // Update local representation
+            if (result.isSuccess) {
+                val newRecord = result.getOrNull()!!
                 _uiState.update { current ->
                     val updatedInvoices = current.invoices.map { inv ->
                         if (inv.id == invoiceId) {
-                            val newPaid = (inv.amountPaid + validAmount).coerceAtMost(inv.totalAmount)
+                            val updatedRecords = inv.paymentRecords + newRecord
+                            val newPaid = updatedRecords.sumOf { it.amount }
                             val newBal = (inv.totalAmount - newPaid).coerceAtLeast(0.0)
                             val newStatus = when {
                                 newBal <= 0.001 -> "Paid"
                                 newPaid > 0 -> "Partially Paid"
                                 else -> "Unpaid"
                             }
-                            val newRecord = PaymentRecordDto(
-                                paymentId = "PAY-${System.currentTimeMillis()}",
-                                amount = validAmount,
-                                method = method,
-                                referenceNotes = notes,
-                                recordedBy = currentAdmin,
-                                timestamp = System.currentTimeMillis(),
-                                receiptId = "RCP-${inv.invoiceNumber.replace("INV-", "")}-${inv.paymentRecords.size + 1}"
-                            )
                             inv.copy(
                                 amountPaid = newPaid,
                                 balanceDue = newBal,
                                 paymentStatus = newStatus,
-                                paymentRecords = inv.paymentRecords + newRecord
+                                paymentRecords = updatedRecords
                             )
                         } else inv
                     }
@@ -292,13 +290,17 @@ class InvoiceViewModel : ViewModel() {
                         isActionInProgress = false,
                         invoices = updatedInvoices,
                         selectedInvoice = updatedSelected,
-                        successMessage = "Payment of ₹$validAmount recorded successfully"
+                        successMessage = "Payment of ₹$validAmount recorded successfully",
+                        errorMessage = null
                     )
                 }
                 applyFilters()
             } else {
                 _uiState.update {
-                    it.copy(isActionInProgress = false, errorMessage = "Failed to record payment.")
+                    it.copy(
+                        isActionInProgress = false,
+                        errorMessage = result.exceptionOrNull()?.message ?: "Failed to record payment."
+                    )
                 }
             }
         }
@@ -320,19 +322,24 @@ class InvoiceViewModel : ViewModel() {
             val target = _uiState.value.invoices.firstOrNull { it.id == invoiceId }
             if (target != null) {
                 try {
-                    val updated = target.copy(paymentStatus = newStatus)
-                    repository.createOrUpdateInvoice(updated)
-
-                    _uiState.update { current ->
-                        val updatedList = current.invoices.map { if (it.id == invoiceId) updated else it }
-                        current.copy(
-                            isActionInProgress = false,
-                            invoices = updatedList,
-                            selectedInvoice = if (current.selectedInvoice?.id == invoiceId) updated else current.selectedInvoice,
-                            successMessage = "Status updated to $newStatus"
-                        )
+                    val success = repository.updateInvoicePaymentStatus(invoiceId, newStatus)
+                    if (success) {
+                        val updated = target.copy(paymentStatus = newStatus)
+                        _uiState.update { current ->
+                            val updatedList = current.invoices.map { if (it.id == invoiceId) updated else it }
+                            current.copy(
+                                isActionInProgress = false,
+                                invoices = updatedList,
+                                selectedInvoice = if (current.selectedInvoice?.id == invoiceId) updated else current.selectedInvoice,
+                                successMessage = "Status updated to $newStatus"
+                            )
+                        }
+                        applyFilters()
+                    } else {
+                        _uiState.update {
+                            it.copy(isActionInProgress = false, errorMessage = "Failed to update invoice payment status.")
+                        }
                     }
-                    applyFilters()
                 } catch (e: Exception) {
                     _uiState.update {
                         it.copy(isActionInProgress = false, errorMessage = "Failed to update status: ${e.localizedMessage}")

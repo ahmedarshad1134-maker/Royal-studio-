@@ -20,7 +20,9 @@ data class ReviewsUiState(
     val isLoading: Boolean = true,
     val allReviews: List<ReviewItem> = emptyList(), // Admin sees all
     val isSubmittingReview: Boolean = false,
-    val reviewSubmissionSuccess: Boolean = false
+    val reviewSubmissionSuccess: Boolean = false,
+    val reviewSubmissionError: String? = null,
+    val isUserSignedIn: Boolean = false
 ) {
     // Public facing lists
     val approvedReviews: List<ReviewItem>
@@ -37,9 +39,19 @@ class ReviewViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(ReviewsUiState())
     val uiState: StateFlow<ReviewsUiState> = _uiState.asStateFlow()
     private val repository = RepositoryProvider.firebaseRepository
+    private val authRepo = RepositoryProvider.authRepository
 
     init {
         loadReviews()
+        observeAuthState()
+    }
+
+    private fun observeAuthState() {
+        viewModelScope.launch {
+            authRepo.getAuthStateUpdates().collect { user ->
+                _uiState.update { it.copy(isUserSignedIn = user != null) }
+            }
+        }
     }
 
     private fun loadReviews() {
@@ -84,52 +96,108 @@ class ReviewViewModel : ViewModel() {
         }
     }
 
+    fun clearSubmissionError() {
+        _uiState.update { it.copy(reviewSubmissionError = null) }
+    }
+
     fun submitReview(name: String, rating: Int, eventType: String, reviewText: String) {
+        // Validation: rating between 1 and 5
+        if (rating !in 1..5) {
+            _uiState.update { it.copy(reviewSubmissionError = "Rating must be between 1 and 5 stars.") }
+            return
+        }
+        val trimmedReview = reviewText.trim()
+        if (trimmedReview.isBlank()) {
+            _uiState.update { it.copy(reviewSubmissionError = "Review text cannot be blank.") }
+            return
+        }
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            _uiState.update { it.copy(reviewSubmissionError = "Please enter your name.") }
+            return
+        }
+
+        // If user is not signed in, show a message and do not call Firestore
+        val currentUser = authRepo.currentUser
+        if (currentUser == null) {
+            _uiState.update { 
+                it.copy(
+                    reviewSubmissionError = "Please sign in to submit a review.",
+                    isUserSignedIn = false
+                ) 
+            }
+            return
+        }
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isSubmittingReview = true, reviewSubmissionSuccess = false) }
+            _uiState.update { 
+                it.copy(
+                    isSubmittingReview = true, 
+                    reviewSubmissionSuccess = false,
+                    reviewSubmissionError = null
+                ) 
+            }
             
+            val reviewId = "REV-" + UUID.randomUUID().toString().substring(0, 8).uppercase()
             val newReview = ReviewItem(
-                id = "REV-" + UUID.randomUUID().toString().substring(0, 8).uppercase(),
-                customerName = name,
+                id = reviewId,
+                customerName = trimmedName,
                 rating = rating,
-                eventType = eventType,
-                review = reviewText,
+                eventType = eventType.trim(),
+                review = trimmedReview,
                 approved = false, // Must be approved by admin
                 featured = false,
                 createdAt = System.currentTimeMillis()
             )
 
-            if (repository.isInitialized) {
-                try {
-                    val dto = ReviewDto(
-                        id = newReview.id,
-                        customerName = name,
-                        rating = rating,
-                        eventType = eventType,
-                        review = reviewText,
-                        approved = false,
-                        featured = false,
-                        createdAt = Date()
-                    )
-                    repository.createReview(dto)
-                } catch (e: Exception) {
-                    Log.e("ReviewViewModel", "Failed to submit review", e)
+            if (!repository.isInitialized) {
+                _uiState.update { 
+                    it.copy(
+                        isSubmittingReview = false,
+                        reviewSubmissionError = "Firebase service is not initialized."
+                    ) 
                 }
-            } else {
-                delay(600)
+                return@launch
             }
-            
-            _uiState.update { currentState ->
-                currentState.copy(
-                    isSubmittingReview = false,
-                    reviewSubmissionSuccess = true,
-                    allReviews = currentState.allReviews + newReview
+
+            try {
+                // Set customerId = currentUser.uid in the ReviewDto
+                val dto = ReviewDto(
+                    id = reviewId,
+                    customerId = currentUser.uid,
+                    customerName = trimmedName,
+                    rating = rating,
+                    eventType = eventType.trim(),
+                    review = trimmedReview,
+                    approved = false,
+                    featured = false,
+                    createdAt = Date()
                 )
+                repository.createReview(dto)
+
+                // Only set reviewSubmissionSuccess = true after the write truly succeeds
+                _uiState.update { currentState ->
+                    currentState.copy(
+                        isSubmittingReview = false,
+                        reviewSubmissionSuccess = true,
+                        reviewSubmissionError = null,
+                        allReviews = currentState.allReviews + newReview
+                    )
+                }
+                
+                // Reset success state after a delay
+                delay(3000)
+                _uiState.update { it.copy(reviewSubmissionSuccess = false) }
+            } catch (e: Exception) {
+                Log.e("ReviewViewModel", "Failed to submit review", e)
+                _uiState.update { 
+                    it.copy(
+                        isSubmittingReview = false,
+                        reviewSubmissionSuccess = false,
+                        reviewSubmissionError = e.message ?: "Failed to submit review. Please try again."
+                    ) 
+                }
             }
-            
-            // Reset success state after a delay
-            delay(3000)
-            _uiState.update { it.copy(reviewSubmissionSuccess = false) }
         }
     }
 }

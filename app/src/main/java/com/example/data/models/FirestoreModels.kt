@@ -38,7 +38,8 @@ data class AuditEntryDto(
     val status: String = "",
     val updatedBy: String = "",
     val timestamp: Long = 0,
-    val note: String = ""
+    val note: String = "",
+    val adminOnly: Boolean = false
 )
 
 data class BookingDto(

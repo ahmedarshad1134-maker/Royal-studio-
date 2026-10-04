@@ -360,6 +360,34 @@ private fun DashboardContent(uiState: AdminUiState, onNavigate: (AdminSection) -
             .verticalScroll(scrollState)
             .padding(horizontal = 24.dp, vertical = 8.dp)
     ) {
+        if (uiState.errorMessage != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Error",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = uiState.errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
+
         Text(
             text = "Business Overview",
             style = MaterialTheme.typography.titleMedium,

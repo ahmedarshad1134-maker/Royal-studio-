@@ -1,13 +1,32 @@
 package com.example.ui.navigation
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.EditCalendar
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -25,20 +44,17 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.data.repository.RepositoryProvider
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
@@ -65,6 +81,42 @@ import com.example.ui.screens.ServiceDetailScreen
 import com.example.ui.screens.ServicesScreen
 import kotlinx.coroutines.launch
 
+private fun resolveScreenTitle(route: String?): String {
+    if (route.isNullOrBlank()) return "Home"
+    return when {
+        route.startsWith("service_detail") -> "Service Details"
+        route.startsWith("package_detail") -> "Package Details"
+        route.startsWith("private_gallery") || route == Screen.CustomerPrivateGallery.route -> "Private Gallery"
+        route == Screen.Admin.route || route == Screen.AdminPanel.route -> "Admin"
+        route == Screen.Home.route -> "Home"
+        route == Screen.Portfolio.route -> "Portfolio"
+        route == Screen.Services.route -> "Services"
+        route == Screen.Packages.route -> "Packages"
+        route == Screen.Booking.route -> "Booking"
+        route == Screen.CustomerArea.route -> "Customer Area"
+        route == Screen.Reviews.route -> "Reviews"
+        route == Screen.About.route -> "About"
+        route == Screen.Contact.route -> "Contact"
+        else -> drawerScreens.find { it.route == route }?.title ?: "Home"
+    }
+}
+
+private fun getScreenIcon(screen: Screen): ImageVector {
+    return when (screen) {
+        Screen.Home -> Icons.Default.Home
+        Screen.Portfolio -> Icons.Default.PhotoLibrary
+        Screen.Services -> Icons.Default.CameraAlt
+        Screen.Packages -> Icons.Default.Inventory
+        Screen.Booking -> Icons.Default.EditCalendar
+        Screen.Reviews -> Icons.Default.RateReview
+        Screen.About -> Icons.Default.Info
+        Screen.Contact -> Icons.Default.Phone
+        Screen.CustomerArea -> Icons.Default.Person
+        Screen.Admin, Screen.AdminPanel -> Icons.Default.AdminPanelSettings
+        else -> Icons.Default.Home
+    }
+}
+
 @Composable
 fun RoyalStudioApp() {
     val navController = rememberNavController()
@@ -73,54 +125,96 @@ fun RoyalStudioApp() {
     val authRepo = RepositoryProvider.authRepository
     val currentUser by authRepo.getAuthStateUpdates().collectAsState(initial = authRepo.currentUser)
 
+    var isCurrentUserAdmin by remember { mutableStateOf(false) }
+    LaunchedEffect(currentUser) {
+        isCurrentUserAdmin = if (currentUser != null) {
+            authRepo.isCurrentUserAdmin()
+        } else {
+            false
+        }
+    }
+
+    val visibleDrawerScreens = remember(currentUser, isCurrentUserAdmin) {
+        drawerScreens.filter { screen ->
+            if (screen == Screen.Admin) {
+                currentUser == null || isCurrentUserAdmin
+            } else {
+                true
+            }
+        }
+    }
+
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
-    val currentScreen = drawerScreens.find { it.route == currentRoute } ?: Screen.Home
+    val currentScreenTitle = resolveScreenTitle(currentRoute)
+
+    var isRailExpanded by remember { mutableStateOf(true) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWideScreen = maxWidth >= 600.dp
 
         if (isWideScreen) {
             Row(modifier = Modifier.fillMaxSize()) {
-                NavigationRail(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ) {
-                    Text(
-                        text = "Royal Studio",
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
-                    drawerScreens.forEach { screen ->
-                        NavigationRailItem(
-                            label = { Text(text = screen.title) },
-                            icon = { },
-                            selected = currentRoute == screen.route,
-                            onClick = {
-                                navController.navigate(screen.route) {
-                                    popUpTo(navController.graph.startDestinationId) {
-                                        saveState = true
+                if (isRailExpanded) {
+                    NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Royal Studio",
+                                modifier = Modifier.padding(16.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
+                            visibleDrawerScreens.forEach { screen ->
+                                NavigationRailItem(
+                                    label = { Text(text = screen.title) },
+                                    icon = {
+                                        Icon(
+                                            imageVector = getScreenIcon(screen),
+                                            contentDescription = screen.title
+                                        )
+                                    },
+                                    selected = currentRoute == screen.route,
+                                    onClick = {
+                                        navController.navigate(screen.route) {
+                                            popUpTo(navController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
+                                )
                             }
-                        )
+                        }
                     }
                 }
 
                 Scaffold(
                     topBar = {
                         RoyalTopAppBar(
-                            title = currentScreen.title,
-                            onNavigationIconClick = { },
+                            title = currentScreenTitle,
+                            onNavigationIconClick = { isRailExpanded = !isRailExpanded },
                             actions = {
                                 TopBarAuthAction(
                                     currentUser = currentUser,
+                                    isAdmin = isCurrentUserAdmin,
                                     onSignInClick = { navController.navigate(Screen.CustomerArea.route) },
                                     onSignOutClick = { scope.launch { authRepo.signOut() } },
-                                    onProfileClick = { navController.navigate(Screen.CustomerArea.route) }
+                                    onProfileClick = {
+                                        if (isCurrentUserAdmin) {
+                                            navController.navigate(Screen.Admin.route)
+                                        } else {
+                                            navController.navigate(Screen.CustomerArea.route)
+                                        }
+                                    }
                                 )
                             }
                         )
@@ -142,29 +236,41 @@ fun RoyalStudioApp() {
                     ModalDrawerSheet(
                         drawerContainerColor = MaterialTheme.colorScheme.surface
                     ) {
-                        Text(
-                            text = "Royal Studio",
-                            modifier = Modifier.padding(16.dp),
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        HorizontalDivider()
-                        drawerScreens.forEach { screen ->
-                            NavigationDrawerItem(
-                                label = { Text(text = screen.title) },
-                                selected = currentRoute == screen.route,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    navController.navigate(screen.route) {
-                                        popUpTo(navController.graph.startDestinationId) {
-                                            saveState = true
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                text = "Royal Studio",
+                                modifier = Modifier.padding(16.dp),
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.primary
                             )
+                            HorizontalDivider()
+                            visibleDrawerScreens.forEach { screen ->
+                                NavigationDrawerItem(
+                                    label = { Text(text = screen.title) },
+                                    icon = {
+                                        Icon(
+                                            imageVector = getScreenIcon(screen),
+                                            contentDescription = screen.title
+                                        )
+                                    },
+                                    selected = currentRoute == screen.route,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        navController.navigate(screen.route) {
+                                            popUpTo(navController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -172,14 +278,21 @@ fun RoyalStudioApp() {
                 Scaffold(
                     topBar = {
                         RoyalTopAppBar(
-                            title = currentScreen.title,
+                            title = currentScreenTitle,
                             onNavigationIconClick = { scope.launch { drawerState.open() } },
                             actions = {
                                 TopBarAuthAction(
                                     currentUser = currentUser,
+                                    isAdmin = isCurrentUserAdmin,
                                     onSignInClick = { navController.navigate(Screen.CustomerArea.route) },
                                     onSignOutClick = { scope.launch { authRepo.signOut() } },
-                                    onProfileClick = { navController.navigate(Screen.CustomerArea.route) }
+                                    onProfileClick = {
+                                        if (isCurrentUserAdmin) {
+                                            navController.navigate(Screen.Admin.route)
+                                        } else {
+                                            navController.navigate(Screen.CustomerArea.route)
+                                        }
+                                    }
                                 )
                             }
                         )
@@ -201,6 +314,7 @@ fun RoyalStudioApp() {
 @Composable
 private fun TopBarAuthAction(
     currentUser: com.google.firebase.auth.FirebaseUser?,
+    isAdmin: Boolean = false,
     onSignInClick: () -> Unit,
     onSignOutClick: () -> Unit,
     onProfileClick: () -> Unit
@@ -225,8 +339,8 @@ private fun TopBarAuthAction(
         Box(modifier = Modifier.padding(end = 8.dp)) {
             IconButton(onClick = { menuExpanded = true }) {
                 Icon(
-                    imageVector = Icons.Default.AccountCircle,
-                    contentDescription = "Customer Profile",
+                    imageVector = if (isAdmin) Icons.Default.AdminPanelSettings else Icons.Default.AccountCircle,
+                    contentDescription = if (isAdmin) "Admin Panel" else "Customer Profile",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(28.dp)
                 )
@@ -236,8 +350,8 @@ private fun TopBarAuthAction(
                 onDismissRequest = { menuExpanded = false }
             ) {
                 DropdownMenuItem(
-                    text = { Text("Customer Area / Profile") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    text = { Text(if (isAdmin) "Admin Panel" else "Customer Area / Profile") },
+                    leadingIcon = { Icon(if (isAdmin) Icons.Default.AdminPanelSettings else Icons.Default.Person, contentDescription = null) },
                     onClick = {
                         menuExpanded = false
                         onProfileClick()

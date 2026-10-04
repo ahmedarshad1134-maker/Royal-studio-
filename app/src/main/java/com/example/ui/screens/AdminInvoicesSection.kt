@@ -745,6 +745,7 @@ fun InvoiceDetailView(
         var paymentAmountStr by remember { mutableStateOf(invoice.balanceDue.toString()) }
         var selectedMethod by remember { mutableStateOf("Bank Transfer") }
         var paymentNotes by remember { mutableStateOf("") }
+        var paymentError by remember { mutableStateOf<String?>(null) }
         val paymentMethods = listOf("Bank Transfer", "UPI", "Cash", "Card", "Cheque")
 
         AlertDialog(
@@ -762,10 +763,15 @@ fun InvoiceDetailView(
 
                     OutlinedTextField(
                         value = paymentAmountStr,
-                        onValueChange = { paymentAmountStr = it },
+                        onValueChange = {
+                            paymentAmountStr = it
+                            paymentError = null
+                        },
                         label = { Text("Payment Amount (₹)") },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        isError = paymentError != null,
+                        supportingText = paymentError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -797,12 +803,17 @@ fun InvoiceDetailView(
                 Button(
                     onClick = {
                         val amt = paymentAmountStr.toDoubleOrNull() ?: 0.0
-                        val safeAmt = amt.coerceIn(0.0, invoice.balanceDue)
-                        val safeNotes = paymentNotes.trim().take(500)
-                        if (safeAmt > 0) {
-                            showPaymentDialog = false
-                            onRecordPayment(safeAmt, selectedMethod, safeNotes)
+                        if (amt <= 0.0) {
+                            paymentError = "Please enter a valid payment amount"
+                            return@Button
                         }
+                        if (amt > invoice.balanceDue) {
+                            paymentError = "Payment exceeds balance due"
+                            return@Button
+                        }
+                        val safeNotes = paymentNotes.trim().take(500)
+                        showPaymentDialog = false
+                        onRecordPayment(amt, selectedMethod, safeNotes)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {

@@ -143,18 +143,60 @@ class AdminBookingsViewModel : ViewModel() {
         }
     }
 
+    fun getValidNextStatuses(currentStatus: String): List<Pair<String, String>> {
+        return when (currentStatus) {
+            "NEW" -> listOf(
+                "CONTACTED" to "Contacted Customer",
+                "CANCELLED" to "Cancelled Booking"
+            )
+            "CONTACTED" -> listOf(
+                "QUOTATION_SENT" to "Quotation Sent",
+                "CANCELLED" to "Cancelled Booking"
+            )
+            "QUOTATION_SENT" -> listOf(
+                "CONFIRMED" to "Confirmed Booking",
+                "CANCELLED" to "Cancelled Booking"
+            )
+            "CONFIRMED" -> listOf(
+                "COMPLETED" to "Completed Event",
+                "CANCELLED" to "Cancelled Booking"
+            )
+            else -> emptyList()
+        }
+    }
+
+    fun isValidTransition(currentStatus: String, newStatus: String): Boolean {
+        if (currentStatus == newStatus) return true
+        return when (currentStatus) {
+            "NEW" -> newStatus == "CONTACTED" || newStatus == "CANCELLED"
+            "CONTACTED" -> newStatus == "QUOTATION_SENT" || newStatus == "CANCELLED"
+            "QUOTATION_SENT" -> newStatus == "CONFIRMED" || newStatus == "CANCELLED"
+            "CONFIRMED" -> newStatus == "COMPLETED" || newStatus == "CANCELLED"
+            else -> false
+        }
+    }
+
     /**
      * Update booking status with audit trail and optional admin note
      */
-    fun updateStatus(bookingId: String, newStatus: String, note: String = "") {
+    fun updateStatus(bookingId: String, newStatus: String, note: String = "", forceConfirm: Boolean = false) {
         val currentAdmin = authRepo.currentUser?.email ?: "Admin"
         val target = _uiState.value.bookings.firstOrNull { it.id == bookingId } ?: return
 
-        // Check conflicts if confirming
-        if (newStatus == "CONFIRMED") {
+        // Validate allowed transition
+        if (!isValidTransition(target.status, newStatus)) {
+            _uiState.update {
+                it.copy(errorMessage = "Invalid status transition from ${target.status} to $newStatus")
+            }
+            return
+        }
+
+        // Check conflicts if confirming and not already force-confirmed
+        if (newStatus == "CONFIRMED" && !forceConfirm) {
             val conflict = checkForDateConflict(target)
             if (conflict != null) {
                 _uiState.update { it.copy(conflictWarning = conflict) }
+                return
             }
         }
 
@@ -169,7 +211,7 @@ class AdminBookingsViewModel : ViewModel() {
         }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isUpdating = true, errorMessage = null, statusMessage = null) }
+            _uiState.update { it.copy(isUpdating = true, errorMessage = null, statusMessage = null, conflictWarning = null) }
             val success = repository.updateBookingStatus(
                 id = bookingId,
                 newStatus = newStatus,
@@ -181,7 +223,8 @@ class AdminBookingsViewModel : ViewModel() {
                 _uiState.update {
                     it.copy(
                         isUpdating = false,
-                        statusMessage = "Status updated to $newStatus successfully"
+                        statusMessage = "Status updated to $newStatus successfully",
+                        conflictWarning = null
                     )
                 }
             } else {
@@ -193,6 +236,10 @@ class AdminBookingsViewModel : ViewModel() {
                 }
             }
         }
+    }
+
+    fun clearConflictWarning() {
+        _uiState.update { it.copy(conflictWarning = null) }
     }
 
     /**

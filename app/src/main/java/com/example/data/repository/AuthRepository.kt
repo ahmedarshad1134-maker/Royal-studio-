@@ -71,21 +71,34 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
         if (!isInitialized || auth == null) {
             return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
         }
+        val cleanEmail = email.trim().lowercase()
         return try {
-            val result = auth!!.createUserWithEmailAndPassword(email, password).await()
+            val result = auth!!.createUserWithEmailAndPassword(cleanEmail, password).await()
             val user = result.user ?: throw Exception("Signup failed, user is null")
             
             // Create user document in Firestore - strictly enforce "customer" role
             val userDto = UserDto(
                 uid = user.uid,
-                name = name,
-                email = email,
-                phone = phone,
+                name = name.trim(),
+                email = cleanEmail,
+                phone = phone.trim(),
                 role = "customer",
                 createdAt = Date(),
                 updatedAt = Date()
             )
-            dbRepository.createUserProfile(userDto)
+
+            // If createUserProfile fails after the account was created, retry once;
+            // if it still fails, return success but log the error and let ensureCustomerProfile create it on next login.
+            try {
+                dbRepository.createUserProfile(userDto)
+            } catch (e: Exception) {
+                Log.w("AuthRepository", "First attempt to create user profile failed, retrying once...", e)
+                try {
+                    dbRepository.createUserProfile(userDto)
+                } catch (retryEx: Exception) {
+                    Log.e("AuthRepository", "Retry creating user profile failed. Returning success and deferring to ensureCustomerProfile on next login.", retryEx)
+                }
+            }
             
             Result.success(user)
         } catch (e: Exception) {
@@ -128,7 +141,7 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
             return Result.failure(IllegalStateException("Firebase is not initialized. Please ensure google-services.json is configured in the app/ folder."))
         }
         return try {
-            auth!!.sendPasswordResetEmail(email.trim()).await()
+            auth!!.sendPasswordResetEmail(email.trim().lowercase()).await()
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -137,18 +150,24 @@ class AuthRepository(private val dbRepository: FirebaseRepository) {
 
     private suspend fun ensureCustomerProfile(user: FirebaseUser) {
         try {
-            val existingProfile = dbRepository.getUserProfile(user.uid)
-            if (existingProfile == null) {
-                val userDto = UserDto(
-                    uid = user.uid,
-                    name = user.displayName ?: "",
-                    email = user.email ?: "",
-                    phone = user.phoneNumber ?: "",
-                    role = "customer",
-                    createdAt = Date(),
-                    updatedAt = Date()
-                )
-                dbRepository.createUserProfile(userDto)
+            val existsResult = dbRepository.userProfileExists(user.uid)
+            if (existsResult.isSuccess) {
+                val exists = existsResult.getOrNull() == true
+                if (!exists) {
+                    val cleanEmail = user.email?.trim()?.lowercase() ?: ""
+                    val userDto = UserDto(
+                        uid = user.uid,
+                        name = user.displayName ?: "",
+                        email = cleanEmail,
+                        phone = user.phoneNumber ?: "",
+                        role = "customer",
+                        createdAt = Date(),
+                        updatedAt = Date()
+                    )
+                    dbRepository.createUserProfile(userDto)
+                }
+            } else {
+                Log.w("AuthRepository", "Failed to check if user profile exists (network/permission error): ${existsResult.exceptionOrNull()?.message}. Will not overwrite existing profile.")
             }
         } catch (e: Exception) {
             Log.w("AuthRepository", "Error ensuring customer profile in Firestore", e)

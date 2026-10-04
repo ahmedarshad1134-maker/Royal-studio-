@@ -13,7 +13,8 @@ data class BookingAuditEntry(
     val status: String = "",
     val updatedBy: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val note: String = ""
+    val note: String = "",
+    val adminOnly: Boolean = false
 )
 
 data class BookingItem(

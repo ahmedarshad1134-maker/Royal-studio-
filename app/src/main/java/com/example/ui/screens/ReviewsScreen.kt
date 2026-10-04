@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -168,7 +169,10 @@ fun ReviewsScreen(
         // Write Review Bottom Sheet
         if (showReviewSheet) {
             ModalBottomSheet(
-                onDismissRequest = { showReviewSheet = false },
+                onDismissRequest = { 
+                    viewModel.clearSubmissionError()
+                    showReviewSheet = false 
+                },
                 sheetState = sheetState,
                 containerColor = MaterialTheme.colorScheme.background,
                 dragHandle = null // Custom header instead
@@ -176,7 +180,16 @@ fun ReviewsScreen(
                 WriteReviewSheet(
                     isSubmitting = uiState.isSubmittingReview,
                     isSuccess = uiState.reviewSubmissionSuccess,
+                    submissionError = uiState.reviewSubmissionError,
+                    isUserSignedIn = uiState.isUserSignedIn,
+                    onNavigateToSignIn = {
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            if (!sheetState.isVisible) showReviewSheet = false
+                        }
+                        navController.navigate(com.example.ui.navigation.Screen.CustomerArea.route)
+                    },
                     onClose = {
+                        viewModel.clearSubmissionError()
                         scope.launch { sheetState.hide() }.invokeOnCompletion {
                             if (!sheetState.isVisible) showReviewSheet = false
                         }
@@ -434,6 +447,9 @@ private fun ReviewerInfo(review: ReviewItem) {
 private fun WriteReviewSheet(
     isSubmitting: Boolean,
     isSuccess: Boolean,
+    submissionError: String?,
+    isUserSignedIn: Boolean,
+    onNavigateToSignIn: () -> Unit,
     onClose: () -> Unit,
     onSubmit: (name: String, rating: Int, eventType: String, reviewText: String) -> Unit
 ) {
@@ -467,7 +483,48 @@ private fun WriteReviewSheet(
         
         Divider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
-        if (isSuccess) {
+        if (!isUserSignedIn) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 32.dp, horizontal = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccountCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                Text(
+                    text = "Sign In Required",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Please sign in to submit a review for your photography or videography session.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center
+                )
+                Button(
+                    onClick = onNavigateToSignIn,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Sign In / Customer Area")
+                }
+            }
+        } else if (isSuccess) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -507,6 +564,22 @@ private fun WriteReviewSheet(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Error banner if Firestore or submission failed
+                if (submissionError != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = submissionError,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
                 
                 // Rating selector
                 Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -560,7 +633,7 @@ private fun WriteReviewSheet(
                 
                 if (showError) {
                     Text(
-                        text = "Please fill in all fields.",
+                        text = "Please fill in all fields with a valid rating (1-5).",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -568,7 +641,7 @@ private fun WriteReviewSheet(
 
                 Button(
                     onClick = {
-                        if (name.isBlank() || eventType.isBlank() || reviewText.isBlank()) {
+                        if (name.isBlank() || eventType.isBlank() || reviewText.isBlank() || rating !in 1..5) {
                             showError = true
                         } else {
                             onSubmit(name, rating, eventType, reviewText)

@@ -1,24 +1,30 @@
 package com.example.ui.viewmodels
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.models.BookingDto
+import com.example.data.models.InvoiceDto
 import com.example.data.models.UserRole
+import com.example.data.repository.RepositoryProvider
 import com.example.ui.models.BookingStatus
 import com.example.ui.models.BookingUpdate
 import com.example.ui.models.CustomerBookingData
 import com.example.ui.models.GalleryStatus
-import com.example.data.models.InvoiceDto
-import com.example.data.repository.RepositoryProvider
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class CustomerAreaUiState(
     // Auth State
     val isAuthenticated: Boolean = false,
+    val isAdminSession: Boolean = false,
     val isAuthenticating: Boolean = false,
     val authError: String? = null,
     val isSignUpMode: Boolean = false,
@@ -27,8 +33,12 @@ data class CustomerAreaUiState(
     
     // Customer Info
     val customerName: String = "",
-    val bookingData: CustomerBookingData? = null
-)
+    val bookings: List<CustomerBookingData> = emptyList(),
+    val selectedBooking: CustomerBookingData? = null
+) {
+    val bookingData: CustomerBookingData?
+        get() = selectedBooking ?: bookings.firstOrNull()
+}
 
 class CustomerAreaViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(CustomerAreaUiState())
@@ -37,38 +47,61 @@ class CustomerAreaViewModel : ViewModel() {
     private val authRepo = RepositoryProvider.authRepository
     private val repository = RepositoryProvider.firebaseRepository
 
+    private var sessionJob: Job? = null
+    private var customerDataJob: Job? = null
+
     init {
         checkSession()
     }
 
     private fun checkSession() {
-        viewModelScope.launch {
+        sessionJob?.cancel()
+        sessionJob = viewModelScope.launch {
             authRepo.getAuthStateUpdates().collect { user ->
                 if (user != null) {
                     val role = authRepo.getUserRole(user.uid)
-                    if (role == UserRole.CUSTOMER) {
+                    if (role == UserRole.ADMIN) {
+                        customerDataJob?.cancel()
+                        customerDataJob = null
+                        _uiState.update { 
+                            it.copy(
+                                isAuthenticated = false,
+                                isAdminSession = true,
+                                customerName = user.displayName?.ifBlank { null } 
+                                    ?: user.email?.substringBefore("@") 
+                                    ?: "Administrator",
+                                bookings = emptyList(),
+                                selectedBooking = null,
+                                authError = null
+                            ) 
+                        }
+                    } else {
                         _uiState.update { 
                             it.copy(
                                 isAuthenticated = true,
+                                isAdminSession = false,
                                 customerName = user.displayName?.ifBlank { null } 
                                     ?: user.email?.substringBefore("@")?.replaceFirstChar { char -> char.uppercase() } 
                                     ?: "Customer",
                                 authError = null
                             )
                         }
-                        loadCustomerData(user.uid, user.email ?: "")
-                    } else {
-                        // Admin signed in - do not allow admin in Customer Area
-                        authRepo.signOut()
-                        _uiState.update { 
-                            it.copy(
-                                isAuthenticated = false,
-                                authError = "Administrator accounts cannot access the Customer Area. Please use the Admin Portal."
-                            ) 
+                        customerDataJob?.cancel()
+                        customerDataJob = viewModelScope.launch {
+                            loadCustomerData(user.uid, user.email ?: "")
                         }
                     }
                 } else {
-                    _uiState.update { it.copy(isAuthenticated = false, bookingData = null) }
+                    customerDataJob?.cancel()
+                    customerDataJob = null
+                    _uiState.update { 
+                        it.copy(
+                            isAuthenticated = false, 
+                            isAdminSession = false,
+                            bookings = emptyList(), 
+                            selectedBooking = null
+                        ) 
+                    }
                 }
             }
         }
@@ -78,8 +111,16 @@ class CustomerAreaViewModel : ViewModel() {
         _uiState.update { it.copy(isSignUpMode = !it.isSignUpMode, authError = null) }
     }
 
+    fun selectBooking(booking: CustomerBookingData) {
+        _uiState.update { it.copy(selectedBooking = booking) }
+    }
+
+    fun clearSelectedBooking() {
+        _uiState.update { it.copy(selectedBooking = null) }
+    }
+
     fun authenticate(email: String, password: String, name: String = "") {
-        val trimmedEmail = email.trim()
+        val trimmedEmail = email.trim().lowercase()
         if (trimmedEmail.isBlank() || password.isBlank()) {
             _uiState.update { it.copy(authError = "Please enter both Email and Password.") }
             return
@@ -108,20 +149,18 @@ class CustomerAreaViewModel : ViewModel() {
                 val user = result.getOrNull()
                 val role = authRepo.getUserRole(user?.uid ?: "")
                 if (role == UserRole.ADMIN) {
-                    authRepo.signOut()
                     _uiState.update { 
                         it.copy(
                             isAuthenticating = false, 
-                            authError = "Administrator accounts cannot access the Customer Area. Please use the Admin Portal."
+                            isAdminSession = true,
+                            authError = null
                         ) 
                     }
                 } else {
                     _uiState.update { 
-                        it.copy(isAuthenticating = false, authError = null) 
+                        it.copy(isAuthenticating = false, isAdminSession = false, authError = null) 
                     }
-                    if (user != null) {
-                        loadCustomerData(user.uid, user.email ?: "")
-                    }
+                    // Relies strictly on checkSession auth-state listener to load customer data
                 }
             } else {
                 _uiState.update { 
@@ -142,20 +181,18 @@ class CustomerAreaViewModel : ViewModel() {
                 val user = result.getOrNull()
                 val role = authRepo.getUserRole(user?.uid ?: "")
                 if (role == UserRole.ADMIN) {
-                    authRepo.signOut()
                     _uiState.update { 
                         it.copy(
                             isAuthenticating = false, 
-                            authError = "Administrator accounts cannot access the Customer Area. Please use the Admin Portal."
+                            isAdminSession = true,
+                            authError = null
                         ) 
                     }
                 } else {
                     _uiState.update { 
-                        it.copy(isAuthenticating = false, authError = null) 
+                        it.copy(isAuthenticating = false, isAdminSession = false, authError = null) 
                     }
-                    if (user != null) {
-                        loadCustomerData(user.uid, user.email ?: "")
-                    }
+                    // Relies strictly on checkSession auth-state listener to load customer data
                 }
             } else {
                 _uiState.update { 
@@ -169,7 +206,7 @@ class CustomerAreaViewModel : ViewModel() {
     }
 
     fun sendPasswordReset(email: String) {
-        val trimmed = email.trim()
+        val trimmed = email.trim().lowercase()
         if (trimmed.isBlank()) {
             _uiState.update { it.copy(authError = "Please enter your email address to reset password.") }
             return
@@ -192,7 +229,7 @@ class CustomerAreaViewModel : ViewModel() {
                         isAuthenticating = false,
                         passwordResetSent = false,
                         authError = result.exceptionOrNull()?.message ?: "Failed to send password reset email."
-                    )
+                    ) 
                 }
             }
         }
@@ -212,23 +249,22 @@ class CustomerAreaViewModel : ViewModel() {
 
     private suspend fun loadCustomerData(currentUid: String, currentEmail: String) {
         if (!repository.isInitialized) {
-            _uiState.update { it.copy(bookingData = null) }
+            _uiState.update { it.copy(bookings = emptyList(), selectedBooking = null) }
             return
         }
+        val cleanEmail = currentEmail.trim().lowercase()
         try {
-            repository.getCustomerBookings(currentUid, currentEmail)
-                .catch {
-                    _uiState.update { it.copy(bookingData = null) }
-                }
-                .collect { bookings: List<com.example.data.models.BookingDto> ->
-                // Strictly isolate customer bookings matching authenticated user's ID or email
-                val matchedBooking = bookings.firstOrNull { 
-                    (currentUid.isNotBlank() && it.customerId == currentUid) || 
-                    (currentEmail.isNotBlank() && it.email.equals(currentEmail, ignoreCase = true)) 
-                }
-                
-                if (matchedBooking != null) {
-                    val statusEnum = when (matchedBooking.status) {
+            // FIX 1 & FIX 2 & FIX 3:
+            // Combine customer bookings and customer invoices (queries conforming to Firestore rules)
+            combine(
+                repository.getCustomerBookings(customerId = currentUid, email = cleanEmail),
+                repository.getCustomerInvoices(email = cleanEmail, customerId = currentUid)
+            ) { bookingsDto: List<BookingDto>, invoicesDto: List<InvoiceDto> ->
+                // Sort by createdAt descending
+                val sortedBookings = bookingsDto.sortedByDescending { it.createdAt?.time ?: 0L }
+
+                val customerBookings = sortedBookings.map { booking ->
+                    val statusEnum = when (booking.status) {
                         "CONTACTED" -> BookingStatus.CONTACTED
                         "QUOTATION_SENT" -> BookingStatus.QUOTATION_SENT
                         "CONFIRMED" -> BookingStatus.CONFIRMED
@@ -244,8 +280,9 @@ class CustomerAreaViewModel : ViewModel() {
                     }
 
                     // Generate customer-safe updates from auditTrail (NEVER exposing internal adminNotes)
-                    val safeUpdates = if (matchedBooking.auditTrail.isNotEmpty()) {
-                        matchedBooking.auditTrail.map { audit ->
+                    val customerAudits = booking.auditTrail.filter { !it.adminOnly }
+                    val safeUpdates = if (customerAudits.isNotEmpty()) {
+                        customerAudits.map { audit ->
                             val title = when (audit.status) {
                                 "NEW" -> "Enquiry Received"
                                 "CONTACTED" -> "Team Contacted You"
@@ -273,39 +310,52 @@ class CustomerAreaViewModel : ViewModel() {
                     } else {
                         listOf(
                             BookingUpdate(
-                                timestamp = matchedBooking.createdAt?.time ?: System.currentTimeMillis(),
+                                timestamp = booking.createdAt?.time ?: System.currentTimeMillis(),
                                 title = "Enquiry Received",
                                 message = "Thank you for submitting your enquiry. Our team is reviewing details."
                             )
                         )
                     }
 
-                    val invoice = repository.getInvoiceByBookingId(matchedBooking.id)
+                    // FIX 1: Show the invoice that matches the booking's id
+                    val matchedInvoice = invoicesDto.firstOrNull { it.bookingId == booking.id }
 
-                    val customerData = CustomerBookingData(
-                        id = matchedBooking.id,
-                        referenceId = matchedBooking.referenceId.ifBlank { matchedBooking.id },
-                        eventType = matchedBooking.eventType,
-                        eventDate = matchedBooking.eventDate,
-                        location = matchedBooking.eventLocation,
-                        selectedPackage = matchedBooking.packageId.ifBlank { "Royal Studio Package" },
+                    CustomerBookingData(
+                        id = booking.id,
+                        referenceId = booking.referenceId.ifBlank { booking.id },
+                        eventType = booking.eventType,
+                        eventDate = booking.eventDate,
+                        location = booking.eventLocation,
+                        selectedPackage = booking.packageId.ifBlank { "Royal Studio Package" },
                         status = statusEnum,
                         updates = safeUpdates,
                         galleryStatus = galleryStatus,
-                        invoice = invoice
+                        invoice = matchedInvoice
                     )
-                    _uiState.update { it.copy(bookingData = customerData) }
-                } else {
-                    // When no booking records found, show clean empty state (CustomerNoBookingsScreen)
-                    _uiState.update { it.copy(bookingData = null) }
                 }
-            }
+
+                val currentSelectedId = _uiState.value.selectedBooking?.id
+                val updatedSelected = customerBookings.find { it.id == currentSelectedId }
+
+                _uiState.update { 
+                    it.copy(
+                        bookings = customerBookings,
+                        selectedBooking = updatedSelected
+                    ) 
+                }
+            }.catch { e ->
+                Log.e("CustomerAreaViewModel", "Error in combined bookings and invoices stream", e)
+                _uiState.update { it.copy(bookings = emptyList(), selectedBooking = null) }
+            }.collect()
         } catch (e: Exception) {
-            _uiState.update { it.copy(bookingData = null) }
+            Log.e("CustomerAreaViewModel", "Error loading customer data", e)
+            _uiState.update { it.copy(bookings = emptyList(), selectedBooking = null) }
         }
     }
 
     fun logout() {
+        customerDataJob?.cancel()
+        customerDataJob = null
         viewModelScope.launch {
             authRepo.signOut()
             _uiState.update { CustomerAreaUiState() }
@@ -314,5 +364,11 @@ class CustomerAreaViewModel : ViewModel() {
 
     fun clearError() {
         _uiState.update { it.copy(authError = null) }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        customerDataJob?.cancel()
+        sessionJob?.cancel()
     }
 }

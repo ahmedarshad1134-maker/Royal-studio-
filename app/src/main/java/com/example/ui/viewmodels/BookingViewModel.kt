@@ -68,7 +68,7 @@ class BookingViewModel : ViewModel() {
     private fun generateReferenceId(): String {
         val year = Calendar.getInstance().get(Calendar.YEAR)
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        val code = (1..4).map { chars[Random.nextInt(chars.length)] }.joinToString("")
+        val code = (1..6).map { chars[Random.nextInt(chars.length)] }.joinToString("")
         return "RS-$year-$code"
     }
 
@@ -175,8 +175,18 @@ class BookingViewModel : ViewModel() {
             _uiState.update { it.copy(isSubmitting = true, submissionError = null) }
             
             val refId = generateReferenceId()
-            val currentUserId = authRepo.currentUser?.uid ?: ""
-            val currentUserEmail = authRepo.currentUser?.email ?: currentState.email.trim()
+            val authUser = authRepo.currentUser
+            val currentUserId = authUser?.uid ?: ""
+            val authUserEmail = authUser?.email?.trim()?.lowercase() ?: ""
+            val typedEmail = currentState.email.trim().lowercase()
+
+            val finalEmail = if (authUserEmail.isNotBlank()) authUserEmail else typedEmail
+
+            var finalMessage = currentState.message.trim()
+            if (authUserEmail.isNotBlank() && typedEmail.isNotBlank() && typedEmail != authUserEmail) {
+                val emailNote = "[Client specified alternate contact email: $typedEmail]"
+                finalMessage = if (finalMessage.isBlank()) emailNote else "$finalMessage\n$emailNote"
+            }
 
             val initialAudit = BookingAuditEntry(
                 status = "NEW",
@@ -185,42 +195,21 @@ class BookingViewModel : ViewModel() {
                 note = "Enquiry submitted via mobile app"
             )
 
-            val newBooking = BookingItem(
-                id = refId,
-                referenceId = refId,
-                customerId = currentUserId,
-                customerName = currentState.customerName.trim(),
-                phone = currentState.phone.trim(),
-                email = currentUserEmail.takeIf { it.isNotBlank() },
-                eventType = currentState.eventType,
-                eventDate = currentState.eventDateMillis ?: 0L,
-                location = currentState.location.trim(),
-                packageId = currentState.selectedOffering,
-                serviceId = null,
-                message = currentState.message.takeIf { it.isNotBlank() }?.trim(),
-                status = BookingStatus.NEW,
-                adminNotes = "",
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
-                updatedBy = "Customer",
-                auditTrail = listOf(initialAudit)
-            )
-
             if (repository.isInitialized) {
                 try {
                     val dto = BookingDto(
-                        id = refId,
+                        id = "", // Firestore auto-generates document ID
                         referenceId = refId,
                         customerId = currentUserId,
                         customerName = currentState.customerName.trim(),
                         phone = currentState.phone.trim(),
-                        email = currentUserEmail,
+                        email = finalEmail,
                         eventType = currentState.eventType,
                         eventDate = currentState.eventDateMillis ?: 0L,
                         eventLocation = currentState.location.trim(),
                         serviceId = "",
                         packageId = currentState.selectedOffering,
-                        message = currentState.message.trim(),
+                        message = finalMessage,
                         status = "NEW",
                         createdAt = Date(),
                         updatedAt = Date(),
@@ -235,7 +224,29 @@ class BookingViewModel : ViewModel() {
                             )
                         )
                     )
-                    repository.createBooking(dto)
+                    val autoDocId = repository.createBooking(dto)
+
+                    val newBooking = BookingItem(
+                        id = autoDocId,
+                        referenceId = refId,
+                        customerId = currentUserId,
+                        customerName = currentState.customerName.trim(),
+                        phone = currentState.phone.trim(),
+                        email = finalEmail.takeIf { it.isNotBlank() },
+                        eventType = currentState.eventType,
+                        eventDate = currentState.eventDateMillis ?: 0L,
+                        location = currentState.location.trim(),
+                        packageId = currentState.selectedOffering,
+                        serviceId = null,
+                        message = finalMessage.takeIf { it.isNotBlank() },
+                        status = BookingStatus.NEW,
+                        adminNotes = "",
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                        updatedBy = "Customer",
+                        auditTrail = listOf(initialAudit)
+                    )
+
                     _uiState.update { 
                         it.copy(
                             isSubmitting = false,
@@ -252,6 +263,26 @@ class BookingViewModel : ViewModel() {
                     }
                 }
             } else {
+                val newBooking = BookingItem(
+                    id = refId,
+                    referenceId = refId,
+                    customerId = currentUserId,
+                    customerName = currentState.customerName.trim(),
+                    phone = currentState.phone.trim(),
+                    email = finalEmail.takeIf { it.isNotBlank() },
+                    eventType = currentState.eventType,
+                    eventDate = currentState.eventDateMillis ?: 0L,
+                    location = currentState.location.trim(),
+                    packageId = currentState.selectedOffering,
+                    serviceId = null,
+                    message = finalMessage.takeIf { it.isNotBlank() },
+                    status = BookingStatus.NEW,
+                    adminNotes = "",
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis(),
+                    updatedBy = "Customer",
+                    auditTrail = listOf(initialAudit)
+                )
                 _uiState.update { 
                     it.copy(
                         isSubmitting = false,
