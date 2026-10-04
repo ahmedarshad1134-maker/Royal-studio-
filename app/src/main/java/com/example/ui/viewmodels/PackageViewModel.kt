@@ -107,16 +107,12 @@ class PackageViewModel(
                         }
                         .collect { dtos ->
                             val activeDtos = dtos.filter { it.enabled }
-                            if (activeDtos.isEmpty()) {
-                                fallbackToHardcoded()
-                            } else {
-                                val mapped = activeDtos.map { mapDtoToPackageItem(it) }
-                                _uiState.update {
-                                    it.copy(
-                                        isLoading = false,
-                                        packages = mapped
-                                    )
-                                }
+                            val mapped = activeDtos.map { mapDtoToPackageItem(it) }
+                            _uiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    packages = mapped
+                                )
                             }
                         }
                 } catch (e: Exception) {

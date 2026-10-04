@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.EventBusy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -57,14 +58,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -81,9 +87,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.example.data.models.BlockedDateDto
+import com.example.data.models.PackageDto
+import com.example.data.models.ServiceDto
 import com.example.ui.models.BookingItem
 import com.example.ui.viewmodels.BookingUiState
 import com.example.ui.viewmodels.BookingViewModel
+import com.example.ui.viewmodels.isDateBlocked
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -190,6 +200,7 @@ fun BookingScreen(
                         )
                         2 -> Step2EventDate(
                             selectedDateMillis = uiState.eventDateMillis,
+                            blockedDates = uiState.blockedDates,
                             error = uiState.errors["eventDate"],
                             onSelect = { viewModel.updateEventDate(it) },
                             onNext = { viewModel.nextStep() }
@@ -201,9 +212,16 @@ fun BookingScreen(
                             onNext = { viewModel.nextStep() }
                         )
                         4 -> Step4Offering(
+                            availablePackages = uiState.availablePackages,
+                            availableServices = uiState.availableServices,
+                            selectedPackageId = uiState.selectedPackageId,
+                            selectedPackageName = uiState.selectedPackageName,
+                            selectedServiceId = uiState.selectedServiceId,
+                            selectedServiceName = uiState.selectedServiceName,
                             selectedOffering = uiState.selectedOffering,
                             error = uiState.errors["offering"],
-                            onSelect = { viewModel.updateSelectedOffering(it) },
+                            onSelectPackage = { viewModel.selectPackage(it) },
+                            onSelectService = { viewModel.selectService(it) },
                             onNext = { viewModel.nextStep() }
                         )
                         5 -> Step5CustomerInfo(
@@ -298,14 +316,41 @@ fun Step1EventType(
 @Composable
 fun Step2EventDate(
     selectedDateMillis: Long?,
+    blockedDates: List<BlockedDateDto> = emptyList(),
     error: String?,
     onSelect: (Long?) -> Unit,
     onNext: () -> Unit
 ) {
-    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = selectedDateMillis)
+    val selectableDates = remember(blockedDates) {
+        object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                // Prevent dates in past
+                val todayUtc = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                if (utcTimeMillis < todayUtc) return false
+                // Prevent blocked dates
+                return !isDateBlocked(utcTimeMillis, blockedDates)
+            }
+
+            override fun isSelectableYear(year: Int): Boolean {
+                val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                return year >= currentYear
+            }
+        }
+    }
+
+    val datePickerState = rememberDatePickerState(
+        initialSelectedDateMillis = selectedDateMillis,
+        selectableDates = selectableDates
+    )
     
     LaunchedEffect(datePickerState.selectedDateMillis) {
-        onSelect(datePickerState.selectedDateMillis)
+        val picked = datePickerState.selectedDateMillis
+        onSelect(picked)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -326,8 +371,30 @@ fun Step2EventDate(
         }
 
         if (error != null) {
-            Text(text = error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            Spacer(modifier = Modifier.height(8.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.EventBusy,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = error,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
         }
 
         Button(
@@ -389,60 +456,236 @@ fun Step3Location(
 
 @Composable
 fun Step4Offering(
+    availablePackages: List<PackageDto>,
+    availableServices: List<ServiceDto>,
+    selectedPackageId: String,
+    selectedPackageName: String,
+    selectedServiceId: String,
+    selectedServiceName: String,
     selectedOffering: String,
     error: String?,
-    onSelect: (String) -> Unit,
+    onSelectPackage: (PackageDto?) -> Unit,
+    onSelectService: (ServiceDto?) -> Unit,
     onNext: () -> Unit
 ) {
-    val offerings = listOf(
-        "Basic Essentials Package",
-        "Standard Classic Package",
-        "Premium Royal Package",
-        "Custom Package",
-        "Photography Service Only",
-        "Cinematography Service Only",
-        "Not sure yet"
-    )
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Packages, 1 = Services
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            text = "Which package or service are you interested in?",
+            text = "Select Package or Service",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Choose an investment package, specific services, or both.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
 
-        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            offerings.forEach { offering ->
-                val isSelected = selectedOffering == offering
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelect(offering) }
-                        .border(
-                            width = if (isSelected) 2.dp else 1.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(12.dp)
-                        ),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+        // Tab Selector between Packages and Services
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = {
+                    Text(
+                        text = "Packages (${availablePackages.size})",
+                        fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = {
+                    Text(
+                        text = "Services (${availableServices.size})",
+                        fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (selectedTab == 0) {
+                if (availablePackages.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
                         Text(
-                            text = offering,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            text = "No packages available. Please switch to Services.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
                         )
-                        if (isSelected) {
-                            Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                } else {
+                    availablePackages.forEach { pkg ->
+                        val isSelected = selectedPackageId == pkg.id
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (isSelected) onSelectPackage(null) else onSelectPackage(pkg)
+                                }
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(12.dp)
+                                ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = pkg.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (pkg.price.isNotBlank()) {
+                                        Text(
+                                            text = if (pkg.price.startsWith("$") || pkg.price.equals("Custom", ignoreCase = true)) pkg.price else "$${pkg.price}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    if (isSelected) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                if (pkg.description.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = pkg.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (pkg.features.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = pkg.features.take(3).joinToString(" • "),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if (availableServices.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "No individual services available. Please switch to Packages.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    availableServices.forEach { svc ->
+                        val isSelected = selectedServiceId == svc.id
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (isSelected) onSelectService(null) else onSelectService(svc)
+                                }
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(12.dp)
+                                ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = svc.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (isSelected) {
+                                        Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                if (svc.description.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = svc.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Summary Card if anything is selected
+        if (selectedPackageName.isNotBlank() || selectedServiceName.isNotBlank()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "Current Selection",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (selectedPackageName.isNotBlank()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Package: $selectedPackageName", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    if (selectedServiceName.isNotBlank()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Service: $selectedServiceName", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -450,9 +693,11 @@ fun Step4Offering(
         }
 
         if (error != null) {
-            Text(text = error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(modifier = Modifier.height(8.dp))
+            Text(text = error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         Button(
             onClick = onNext,
@@ -559,7 +804,15 @@ fun Step6Review(
                     ReviewRow("Event Type", uiState.eventType)
                     ReviewRow("Event Date", dateString)
                     ReviewRow("Location", uiState.location)
-                    ReviewRow("Interested In", uiState.selectedOffering)
+                    if (uiState.selectedPackageName.isNotBlank()) {
+                        ReviewRow("Package", uiState.selectedPackageName)
+                    }
+                    if (uiState.selectedServiceName.isNotBlank()) {
+                        ReviewRow("Service", uiState.selectedServiceName)
+                    }
+                    if (uiState.selectedPackageName.isBlank() && uiState.selectedServiceName.isBlank()) {
+                        ReviewRow("Interested In", uiState.selectedOffering.ifBlank { "Not specified" })
+                    }
                     
                     Spacer(modifier = Modifier.height(16.dp))
                     Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))

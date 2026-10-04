@@ -38,6 +38,7 @@ enum class AdminSection(val title: String) {
     DASHBOARD("Dashboard"),
     BOOKINGS("Bookings Management"),
     INVOICES("Invoices & Billing"),
+    BLOCKED_DATES("Blocked Dates"),
     PORTFOLIO("Portfolio Management"),
     SERVICES("Services"),
     PACKAGES("Packages"),

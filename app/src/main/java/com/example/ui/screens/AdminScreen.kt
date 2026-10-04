@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.BookOnline
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.EventBusy
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LocalMall
@@ -323,6 +324,7 @@ private fun AdminDashboardLayout(
                 AdminSection.PACKAGES -> AdminPackagesSection()
                 AdminSection.REVIEWS -> AdminReviewsSection()
                 AdminSection.SETTINGS -> AdminSettingsSection()
+                AdminSection.BLOCKED_DATES -> AdminBlockedDatesSection(onBackToDashboard = { onNavigate(AdminSection.DASHBOARD) })
             }
         }
     }
@@ -452,6 +454,7 @@ private fun DashboardContent(uiState: AdminUiState, onNavigate: (AdminSection) -
             ModuleCard(title = AdminSection.SERVICES.title, icon = Icons.Default.Build, onClick = { onNavigate(AdminSection.SERVICES) })
             ModuleCard(title = AdminSection.PACKAGES.title, icon = Icons.Default.LocalMall, onClick = { onNavigate(AdminSection.PACKAGES) })
             ModuleCard(title = AdminSection.REVIEWS.title, icon = Icons.Default.RateReview, onClick = { onNavigate(AdminSection.REVIEWS) })
+            ModuleCard(title = AdminSection.BLOCKED_DATES.title, icon = Icons.Default.EventBusy, onClick = { onNavigate(AdminSection.BLOCKED_DATES) })
             ModuleCard(title = AdminSection.SETTINGS.title, icon = Icons.Default.Settings, onClick = { onNavigate(AdminSection.SETTINGS) })
         }
         

@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
 import com.example.ui.navigation.Screen
 import com.example.ui.viewmodels.ServiceViewModel
 
@@ -138,12 +139,23 @@ fun ServiceDetailScreen(
                 .fillMaxWidth()
                 .aspectRatio(4f / 3f)
         ) {
-            Image(
-                painter = painterResource(id = service.coverImageResId),
-                contentDescription = service.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
+            if (!service.imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = service.imageUrl,
+                    placeholder = painterResource(id = service.coverImageResId),
+                    error = painterResource(id = service.coverImageResId),
+                    contentDescription = service.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Image(
+                    painter = painterResource(id = service.coverImageResId),
+                    contentDescription = service.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             // Gradient Overlay
             Box(
                 modifier = Modifier

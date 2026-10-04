@@ -41,23 +41,21 @@ class ServiceViewModel : ViewModel() {
                             fallbackToMockData()
                         }
                         .collect { dtos ->
-                            if (dtos.isEmpty()) {
-                                fallbackToMockData()
-                            } else {
-                                val mapped = dtos.map { dto ->
-                                    ServiceItem(
-                                        id = dto.id,
-                                        name = dto.name,
-                                        shortDescription = dto.description,
-                                        description = dto.description,
-                                        coverImageResId = R.drawable.service_wedding_1789061903404, // Placeholder for remote images
-                                        features = emptyList(),
-                                        startingPrice = "",
-                                        suitableEventTypes = emptyList()
-                                    )
-                                }
-                                _uiState.update { it.copy(isLoading = false, services = mapped) }
+                            val enabledDtos = dtos.filter { it.enabled }
+                            val mapped = enabledDtos.map { dto ->
+                                ServiceItem(
+                                    id = dto.id,
+                                    name = dto.name,
+                                    shortDescription = dto.description,
+                                    description = dto.description,
+                                    coverImageResId = R.drawable.service_wedding_1789061903404, // Default placeholder
+                                    features = emptyList(),
+                                    startingPrice = "",
+                                    suitableEventTypes = emptyList(),
+                                    imageUrl = dto.imageUrl.takeIf { it.isNotBlank() }
+                                )
                             }
+                            _uiState.update { it.copy(isLoading = false, services = mapped, error = null) }
                         }
                 } catch (e: Exception) {
                     fallbackToMockData()
